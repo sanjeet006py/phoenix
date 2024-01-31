@@ -59,6 +59,7 @@ import org.apache.phoenix.util.EnvironmentEdgeManager;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.QueryUtil;
 import org.apache.phoenix.util.SchemaUtil;
+import org.apache.phoenix.util.MetaDataUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -271,6 +272,7 @@ public class IndexScrutinyTool extends Configured implements Tool {
 
             // set CURRENT_SCN for our scan so that incoming writes don't throw off scrutiny
             configuration.set(PhoenixConfigurationUtil.CURRENT_SCN_VALUE, Long.toString(ts));
+            PhoenixConfigurationUtil.setMaxLookbackAge(configuration, pdataTable.getMaxLookbackAge());
 
             // set the source table to either data or index table
             SourceTargetColumnNames columnNames =
@@ -420,8 +422,6 @@ public class IndexScrutinyTool extends Configured implements Tool {
                             ? Long.parseLong(cmdLine.getOptionValue(TIMESTAMP.getOpt()))
                             : EnvironmentEdgeManager.currentTimeMillis() - 60000;
 
-            validateTimestamp(configuration, ts);
-
             if (indexTable != null) {
                 if (!IndexTool.isValidIndexTable(connection, qDataTable, indexTable, tenantId)) {
                     throw new IllegalArgumentException(String
@@ -473,6 +473,7 @@ public class IndexScrutinyTool extends Configured implements Tool {
                 jobs.add(jobFactory.createSubmittableJob(schemaName, indexTable, dataTable,
                     sourceTable, mapperClass));
             }
+            validateTimestamp(configuration, ts);
 
             if (!isForeground) {
                 LOGGER.info("Running Index Scrutiny in Background - Submit async and exit");
@@ -518,7 +519,9 @@ public class IndexScrutinyTool extends Configured implements Tool {
     }
 
     private void validateTimestamp(Configuration configuration, long ts) {
-        long maxLookBackAge = BaseScannerRegionObserverConstants.getMaxLookbackInMillis(configuration);
+        Configuration jobConf = this.jobs.get(0).getConfiguration();
+        long maxLookBackAge = MetaDataUtil.getMaxLookbackAge(configuration,
+                PhoenixConfigurationUtil.getMaxLookbackAge(jobConf));
         if (maxLookBackAge != BaseScannerRegionObserverConstants.DEFAULT_PHOENIX_MAX_LOOKBACK_AGE * 1000L) {
             long minTimestamp = EnvironmentEdgeManager.currentTimeMillis() - maxLookBackAge;
             if (ts < minTimestamp){
