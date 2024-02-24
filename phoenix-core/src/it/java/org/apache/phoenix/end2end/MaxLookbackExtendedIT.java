@@ -30,6 +30,7 @@ import org.apache.phoenix.query.QueryServices;
 import org.apache.phoenix.thirdparty.com.google.common.collect.Maps;
 import org.apache.phoenix.util.EnvironmentEdgeManager;
 import org.apache.phoenix.util.ManualEnvironmentEdge;
+import org.apache.phoenix.util.MetaDataUtil;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.QueryUtil;
 import org.apache.phoenix.util.ReadOnlyProps;
@@ -492,6 +493,67 @@ public class MaxLookbackExtendedIT extends BaseTest {
             }
         }
     }
+
+    @Test
+    public void testCompactionOverViewIndexes() throws Exception {
+        if (! multiCF) return;
+        try (Connection conn = DriverManager.getConnection(getUrl());
+             Statement stmt = conn.createStatement()) {
+            String dataTableName = generateUniqueName();
+            String viewName1 = generateUniqueName();
+            String viewName2 = generateUniqueName();
+            String viewIndexName1 = generateUniqueName();
+            String viewIndexName2 = generateUniqueName();
+            createTable(dataTableName);
+            populateTable(dataTableName);
+            String viewDdl = "CREATE VIEW " + viewName1 + " AS SELECT * FROM " + dataTableName;
+            stmt.execute(viewDdl);
+            viewDdl = "CREATE VIEW " + viewName2 + " AS SELECT * FROM " + dataTableName;
+            stmt.execute(viewDdl);
+            createIndex1(viewName1, viewIndexName1,1);
+            createIndex2(viewName2, viewIndexName2, 1);
+            TableName dataTable = TableName.valueOf(dataTableName);
+            TableName viewIndexTable = TableName.valueOf(MetaDataUtil.getViewIndexPhysicalName(dataTableName));
+            assertRawRowCount(conn, dataTable, 2);
+            assertRawRowCount(conn, viewIndexTable, 2 * 2);
+            injectEdge.setValue(System.currentTimeMillis());
+            //EnvironmentEdgeManager.injectEdge(injectEdge);
+            injectEdge.incrementValue(WAIT_AFTER_TABLE_CREATION_MILLIS);
+            injectEdge.incrementValue(5);
+            stmt.execute("DELETE FROM " + viewName1 + " WHERE " + " id = 'a'");
+            Assert.assertEquals(1, stmt.getUpdateCount());
+            conn.commit();
+            int rowsPlusDeleteMarker = ROWS_POPULATED;
+            TestUtil.dumpTable(conn, viewIndexTable);
+            assertRawRowCount(conn, dataTable, rowsPlusDeleteMarker);
+            assertRawRowCount(conn, viewIndexTable, rowsPlusDeleteMarker * 2);
+            injectEdge.incrementValue(1);
+            updateColumn(conn, viewName2, "id", "b", "val2", "xyz");
+            conn.commit();
+            updateColumn(conn, viewName1, "id", "b", "val3", "ijkl");
+            conn.commit();
+            injectEdge.incrementValue(1);
+            flush(dataTable);
+            flush(viewIndexTable);
+            TestUtil.dumpTable(conn, dataTable);
+            TestUtil.dumpTable(conn, viewIndexTable);
+            assertRawRowCount(conn, dataTable, rowsPlusDeleteMarker);
+            assertRawRowCount(conn, viewIndexTable, rowsPlusDeleteMarker);
+            injectEdge.incrementValue(1);
+            majorCompact(dataTable);
+            majorCompact(viewIndexTable);
+            assertRawRowCount(conn, dataTable, rowsPlusDeleteMarker);
+            assertRawRowCount(conn, viewIndexTable, rowsPlusDeleteMarker);
+            injectEdge.incrementValue(MAX_LOOKBACK_AGE * 1000);
+            majorCompact(dataTable);
+            majorCompact(viewIndexTable);
+            TestUtil.dumpTable(conn, dataTable);
+            TestUtil.dumpTable(conn, viewIndexTable);
+            assertRawRowCount(conn, dataTable, rowsPlusDeleteMarker - 1);
+            assertRawRowCount(conn, viewIndexTable, rowsPlusDeleteMarker - 1);
+        }
+    }
+
     private void flush(TableName table) throws IOException {
         Admin admin = getUtility().getAdmin();
         admin.flush(table);
@@ -524,7 +586,7 @@ public class MaxLookbackExtendedIT extends BaseTest {
             String createSql;
             if (multiCF) {
                 createSql = "create table " + tableName +
-                        " (id varchar(10) not null primary key, val1 varchar(10), " +
+                        " (id varchar(10) not null primary key, a.val1 varchar(10), " +
                         "a.val2 varchar(10), b.val3 varchar(10))" + tableDDLOptions;
             }
             else {
@@ -549,8 +611,28 @@ public class MaxLookbackExtendedIT extends BaseTest {
         throws SQLException {
         try(Connection conn = DriverManager.getConnection(getUrl())) {
             conn.createStatement().execute("CREATE INDEX " + indexTableName + " on " +
-                dataTableName + " (val1) include (val2, val3)" +
+                dataTableName + " (val1) include (val3)" +
                 " VERSIONS=" + indexVersions);
+            conn.commit();
+        }
+    }
+
+    private void createIndex1(String dataTableName, String indexTableName1, int indexVersions)
+            throws SQLException {
+        try(Connection conn = DriverManager.getConnection(getUrl())) {
+            conn.createStatement().execute("CREATE INDEX " + indexTableName1 + " on " +
+                    dataTableName + " (val1)" +
+                    " VERSIONS=" + indexVersions);
+            conn.commit();
+        }
+    }
+
+    private void createIndex2(String dataTableName, String indexTableName2, int indexVersions)
+            throws SQLException {
+        try(Connection conn = DriverManager.getConnection(getUrl())) {
+            conn.createStatement().execute("CREATE INDEX " + indexTableName2 + " on " +
+                    dataTableName + " (val2) include (val1)" +
+                    " VERSIONS=" + indexVersions);
             conn.commit();
         }
     }

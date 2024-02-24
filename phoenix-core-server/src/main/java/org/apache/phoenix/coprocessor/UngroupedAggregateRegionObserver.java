@@ -24,6 +24,11 @@ import static org.apache.phoenix.query.QueryConstants.SINGLE_COLUMN_FAMILY;
 import static org.apache.phoenix.query.QueryConstants.UNGROUPED_AGG_ROW_KEY;
 import static org.apache.phoenix.schema.stats.StatisticsCollectionRunTracker.COMPACTION_UPDATE_STATS_ROW_COUNT;
 import static org.apache.phoenix.schema.stats.StatisticsCollectionRunTracker.CONCURRENT_UPDATE_STATS_ROW_COUNT;
+import static org.apache.phoenix.util.ViewUtil.findAllDescendantViews;
+import static org.apache.phoenix.util.ViewUtil.getSystemTableForChildLinks;
+import static org.apache.phoenix.coprocessorclient.MetaDataProtocol.PHOENIX_MAJOR_VERSION;
+import static org.apache.phoenix.coprocessorclient.MetaDataProtocol.PHOENIX_MINOR_VERSION;
+import static org.apache.phoenix.coprocessorclient.MetaDataProtocol.PHOENIX_PATCH_NUMBER;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
@@ -79,6 +84,7 @@ import org.apache.phoenix.expression.ExpressionType;
 import org.apache.phoenix.hbase.index.Indexer;
 import org.apache.phoenix.hbase.index.covered.update.ColumnReference;
 import org.apache.phoenix.hbase.index.exception.IndexWriteException;
+import org.apache.phoenix.hbase.index.util.VersionUtil;
 import org.apache.phoenix.index.GlobalIndexChecker;
 import org.apache.phoenix.index.IndexMaintainer;
 import org.apache.phoenix.index.PhoenixIndexCodec;
@@ -110,6 +116,7 @@ import org.apache.phoenix.util.ClientUtil;
 import org.apache.phoenix.util.EncodedColumnsUtil;
 import org.apache.phoenix.util.EnvironmentEdgeManager;
 import org.apache.phoenix.util.IndexUtil;
+import org.apache.phoenix.util.MetaDataUtil;
 import org.apache.phoenix.util.PhoenixKeyValueUtil;
 import org.apache.phoenix.util.PropertiesUtil;
 import org.apache.phoenix.util.QueryUtil;
@@ -580,6 +587,28 @@ public class UngroupedAggregateRegionObserver extends BaseScannerRegionObserver 
                 region.getTableDescriptor().getTableName().getName()) == 0);
     }
 
+    private PTable getViewIndexTable(RegionCoprocessorEnvironment env, String fullDataTableName)
+            throws SQLException, IOException {
+        List<PTable> childViews = new ArrayList<>();
+        int clientVersion = VersionUtil.encodeVersion(PHOENIX_MAJOR_VERSION, PHOENIX_MINOR_VERSION,
+                PHOENIX_PATCH_NUMBER);
+        String schemaName = SchemaUtil.getSchemaNameFromFullName(fullDataTableName);
+        String tableName = SchemaUtil.getTableNameFromFullName(fullDataTableName);
+        try (Table hTable = ServerUtil.getHTableForCoprocessorScan(env,
+                getSystemTableForChildLinks(clientVersion, env.getConfiguration()))) {
+            childViews.addAll(findAllDescendantViews(hTable, env.getConfiguration(),
+                    null, schemaName.getBytes(), tableName.getBytes(), HConstants.LATEST_TIMESTAMP,
+                    false).getFirst());
+        }
+        for (PTable view: childViews) {
+            if (view.getIndexes() != null) {
+                return view.getIndexes().get(0);
+            }
+        }
+        // should not reach here
+        throw new TableNotFoundException(schemaName, tableName);
+    }
+
     @Override
     public InternalScanner preCompact(ObserverContext<RegionCoprocessorEnvironment> c, Store store,
                                       InternalScanner scanner, ScanType scanType, CompactionLifeCycleTracker tracker,
@@ -597,10 +626,18 @@ public class UngroupedAggregateRegionObserver extends BaseScannerRegionObserver 
                     if (request.isMajor()) {
                         boolean isDisabled = false;
                         final String fullTableName = tableName.getNameAsString();
+                        String fullDataTableName = MetaDataUtil.getPhysicalDataTableNameIfViewIndex(fullTableName);
+                        boolean isViewIndex = ! fullTableName.equals(fullDataTableName);
                         PTable table = null;
                         try (PhoenixConnection conn = QueryUtil.getConnectionOnServer(
                                 compactionConfig).unwrap(PhoenixConnection.class)) {
-                            table = conn.getTableNoCache(fullTableName);
+                            if (isViewIndex) {
+                                table = getViewIndexTable(c.getEnvironment(), fullDataTableName);
+                            }
+                            else {
+                                table = conn.getTableNoCache(fullTableName);
+                            }
+                            //table = conn.getTableNoCache(fullTableName);
                         } catch (Exception e) {
                             if (e instanceof TableNotFoundException) {
                                 LOGGER.debug("Ignoring HBase table that is not a Phoenix table: "

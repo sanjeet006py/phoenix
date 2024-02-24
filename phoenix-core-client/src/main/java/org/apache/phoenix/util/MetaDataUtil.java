@@ -688,6 +688,13 @@ public class MetaDataUtil {
         return getIndexPhysicalName(physicalTableName, VIEW_INDEX_TABLE_PREFIX);
     }
 
+    public static String getPhysicalDataTableNameIfViewIndex(String physicalViewIndexTableName) {
+        if (! physicalViewIndexTableName.startsWith(VIEW_INDEX_TABLE_PREFIX)) {
+            return physicalViewIndexTableName;
+        }
+        return physicalViewIndexTableName.substring(VIEW_INDEX_TABLE_PREFIX.length());
+    }
+
     public static String getNamespaceMappedName(PName tableName, boolean isNamespaceMapped) {
         String logicalName = tableName.getString();
         if (isNamespaceMapped) {
