@@ -3172,10 +3172,10 @@ public class MetaDataClient {
                 tableUpsert.setNull(36, Types.VARCHAR);
             }
             if (maxLookbackAge == null) {
-                tableUpsert.setNull(37, Types.BIGINT);
+                tableUpsert.setNull(37, Types.INTEGER);
             }
             else {
-                tableUpsert.setLong(37, maxLookbackAge);
+                tableUpsert.setInt(37, maxLookbackAge);
             }
             tableUpsert.execute();
 
@@ -3802,7 +3802,7 @@ public class MetaDataClient {
             Boolean isMultiTenant, Boolean storeNulls, Long guidePostWidth, Boolean appendOnlySchema,
             ImmutableStorageScheme immutableStorageScheme, Boolean useStatsForParallelization,
             Long phoenixTTL, Boolean isChangeDetectionEnabled, String physicalTableName, String schemaVersion,
-                                      QualifierEncodingScheme columnEncodedBytes, String streamingTopicName, Long maxLookbackAge)
+                                      QualifierEncodingScheme columnEncodedBytes, String streamingTopicName, Integer maxLookbackAge)
             throws SQLException {
         String schemaName = table.getSchemaName().getString();
         String tableName = table.getTableName().getString();
@@ -3874,7 +3874,7 @@ public class MetaDataClient {
             mutateStringProperty(connection, tenantId, schemaName, tableName, STREAMING_TOPIC_NAME, streamingTopicName);
         }
         if (maxLookbackAge != null) {
-            mutateLongProperty(connection, tenantId, schemaName, tableName, MAX_LOOKBACK_AGE, maxLookbackAge);
+            mutateIntegerProperty(connection, tenantId, schemaName, tableName, MAX_LOOKBACK_AGE, maxLookbackAge);
         }
         return seqNum;
     }
@@ -3927,6 +3927,27 @@ public class MetaDataClient {
                 tableBoolUpsert.setNull(4, Types.BIGINT);
             } else {
                 tableBoolUpsert.setLong(4, propertyValue);
+            }
+            tableBoolUpsert.execute();
+        }
+    }
+
+    private static void mutateIntegerProperty(Connection connection, String tenantId, String schemaName, String tableName,
+                                           String propertyName, Integer propertyValue) throws SQLException {
+        String updatePropertySql = "UPSERT INTO " + SYSTEM_CATALOG_SCHEMA + ".\"" + SYSTEM_CATALOG_TABLE + "\"( " +
+                TENANT_ID + "," +
+                TABLE_SCHEM + "," +
+                TABLE_NAME + "," +
+                propertyName +
+                ") VALUES (?, ?, ?, ?)";
+        try (PreparedStatement tableBoolUpsert = connection.prepareStatement(updatePropertySql)) {
+            tableBoolUpsert.setString(1, tenantId);
+            tableBoolUpsert.setString(2, schemaName);
+            tableBoolUpsert.setString(3, tableName);
+            if (propertyValue == null) {
+                tableBoolUpsert.setNull(4, Types.INTEGER);
+            } else {
+                tableBoolUpsert.setInt(4, propertyValue);
             }
             tableBoolUpsert.execute();
         }
@@ -5386,7 +5407,7 @@ public class MetaDataClient {
                     } else if (propName.equalsIgnoreCase(STREAMING_TOPIC_NAME)) {
                         metaProperties.setStreamingTopicName((String) value);
                     } else if (propName.equalsIgnoreCase(MAX_LOOKBACK_AGE)) {
-                        metaProperties.setMaxLookbackAge((Long) value);
+                        metaProperties.setMaxLookbackAge((Integer) value);
                     }
                 }
                 // if removeTableProps is true only add the property if it is not an HTable or Phoenix Table property
@@ -5634,7 +5655,7 @@ public class MetaDataClient {
         private String schemaVersion = null;
         private String streamingTopicName = null;
 
-        private Long maxLookbackAge = null;
+        private Integer maxLookbackAge = null;
 
         public Boolean getImmutableRowsProp() {
             return isImmutableRowsProp;
@@ -5784,11 +5805,11 @@ public class MetaDataClient {
             this.streamingTopicName = streamingTopicName;
         }
 
-        public Long getMaxLookbackAge() {
+        public Integer getMaxLookbackAge() {
             return maxLookbackAge;
         }
 
-        public void setMaxLookbackAge(Long maxLookbackAge) {
+        public void setMaxLookbackAge(Integer maxLookbackAge) {
             this.maxLookbackAge = maxLookbackAge;
         }
     }
@@ -5812,7 +5833,7 @@ public class MetaDataClient {
         private String schemaVersion = null;
         private String streamingTopicName = null;
 
-        private Long maxLookbackAge = null;
+        private Integer maxLookbackAge = null;
 
         public Boolean getIsImmutableRows() {
             return isImmutableRows;
@@ -5943,11 +5964,11 @@ public class MetaDataClient {
             this.streamingTopicName = streamingTopicName;
         }
 
-        public Long getMaxLookbackAge() {
+        public Integer getMaxLookbackAge() {
             return maxLookbackAge;
         }
 
-        public void setMaxLookbackAge(Long maxLookbackAge) {
+        public void setMaxLookbackAge(Integer maxLookbackAge) {
             this.maxLookbackAge = maxLookbackAge;
         }
     }

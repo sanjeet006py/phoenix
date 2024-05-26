@@ -517,7 +517,7 @@ public class IndexScrutinyTool extends Configured implements Tool {
     private void validateTimestamp(Configuration configuration, long ts, Integer dataTableMaxLookback) {
         int maxLookBackAge = MetaDataUtil.getMaxLookbackAge(configuration, dataTableMaxLookback);
         if (maxLookBackAge != BaseScannerRegionObserverConstants.DEFAULT_PHOENIX_MAX_LOOKBACK_AGE) {
-            long minTimestamp = EnvironmentEdgeManager.currentTimeMillis() - maxLookBackAge * 1000;
+            long minTimestamp = EnvironmentEdgeManager.currentTimeMillis() - maxLookBackAge * 1000L;
             if (ts < minTimestamp){
                 throw new IllegalArgumentException("Index scrutiny can't look back past the configured" +
                     " max lookback age: " + maxLookBackAge + " seconds");

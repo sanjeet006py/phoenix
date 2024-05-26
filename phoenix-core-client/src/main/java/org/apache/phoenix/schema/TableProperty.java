@@ -35,6 +35,7 @@ import org.apache.phoenix.exception.SQLExceptionCode;
 import org.apache.phoenix.exception.SQLExceptionInfo;
 import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.schema.PTable.ImmutableStorageScheme;
+import org.apache.phoenix.schema.types.PInteger;
 import org.apache.phoenix.transaction.TransactionFactory;
 import org.apache.phoenix.util.SchemaUtil;
 import org.apache.phoenix.schema.types.PLong;
@@ -348,11 +349,8 @@ public enum TableProperty {
             else if (value instanceof Integer) {
                 return Integer.valueOf((Integer) value);
             }
-            else if (value instanceof Long) {
-                return value;
-            }
             else {
-                throw new IllegalArgumentException("Table level MAX_LOOKBACK_AGE should be a " + PLong.INSTANCE.getSqlTypeName() + " value in milli-seconds");
+                throw new IllegalArgumentException("Table level MAX_LOOKBACK_AGE should be a " + PInteger.INSTANCE.getSqlTypeName() + " value in seconds");
             }
         }
 

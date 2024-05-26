@@ -112,7 +112,7 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
     private final boolean columnEncoded;
     private static final Logger LOGGER = LoggerFactory.getLogger(AlterTableIT.class);
 
-    private final long oneDayInSeconds = Duration.ofDays(1).getSeconds();
+    private final int oneDayInSeconds = (int) Duration.ofDays(1).getSeconds();
 
     public AlterTableIT(boolean columnEncoded) {
         this.columnEncoded = columnEncoded;
@@ -1805,19 +1805,19 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
         String schemaName = generateUniqueName();
         String dataTableName = generateUniqueName();
         String fullTableName = SchemaUtil.getTableName(schemaName, dataTableName);
-        Long maxLookbackAge = oneDayInSeconds;
+        Integer maxLookbackAge = oneDayInSeconds;
         try (Connection conn = DriverManager.getConnection(getUrl())) {
             String ddl = "CREATE TABLE  " + fullTableName +
                     "  (a_string varchar not null PRIMARY KEY, col1 integer) MAX_LOOKBACK_AGE=" + maxLookbackAge;
             conn.createStatement().execute(ddl);
             assertMaxLookbackAge(fullTableName, maxLookbackAge);
-            maxLookbackAge = 3L * oneDayInSeconds;
+            maxLookbackAge = 3 * oneDayInSeconds;
             alterTableLevelMaxLookbackAge(fullTableName, maxLookbackAge.toString());
             assertMaxLookbackAge(fullTableName, maxLookbackAge);
-            maxLookbackAge = 2L * oneDayInSeconds;
+            maxLookbackAge = 2 * oneDayInSeconds;
             alterTableLevelMaxLookbackAge(fullTableName, maxLookbackAge.toString());
             assertMaxLookbackAge(fullTableName, maxLookbackAge);
-            maxLookbackAge = 0L;
+            maxLookbackAge = 0;
             alterTableLevelMaxLookbackAge(fullTableName, maxLookbackAge.toString());
             assertMaxLookbackAge(fullTableName, maxLookbackAge);
         }
@@ -1842,7 +1842,7 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
         String schemaName = generateUniqueName();
         String dataTableName = generateUniqueName();
         String fullDataTableName = SchemaUtil.getTableName(schemaName, dataTableName);
-        Long maxLookbackAge = oneDayInSeconds;
+        Integer maxLookbackAge = oneDayInSeconds;
         try(Connection conn = DriverManager.getConnection(getUrl());
             Statement stmt = conn.createStatement()) {
             String ddl = "CREATE TABLE  " + fullDataTableName +
@@ -1885,7 +1885,7 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
         }
     }
 
-    private void assertMaxLookbackAge(String fullTableName, Long expectedMaxLookbackAge) throws Exception {
+    private void assertMaxLookbackAge(String fullTableName, Integer expectedMaxLookbackAge) throws Exception {
         try (Connection conn = DriverManager.getConnection(getUrl())) {
             PhoenixConnection pconn = conn.unwrap(PhoenixConnection.class);
             assertEquals(expectedMaxLookbackAge, pconn.getTableNoCache(fullTableName).getMaxLookbackAge());

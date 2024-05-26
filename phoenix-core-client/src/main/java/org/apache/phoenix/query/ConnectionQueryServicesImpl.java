@@ -4273,7 +4273,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                         + PVarchar.INSTANCE.getSqlTypeName());
             metaConnection = addColumnsIfNotExists(metaConnection, PhoenixDatabaseMetaData.SYSTEM_CATALOG,
                     MIN_SYSTEM_TABLE_TIMESTAMP_5_3_0,
-                    PhoenixDatabaseMetaData.MAX_LOOKBACK_AGE + " " + PLong.INSTANCE.getSqlTypeName());
+                    PhoenixDatabaseMetaData.MAX_LOOKBACK_AGE + " " + PInteger.INSTANCE.getSqlTypeName());
             UpgradeUtil.bootstrapLastDDLTimestampForIndexes(metaConnection);
         }
         return metaConnection;
