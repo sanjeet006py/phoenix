@@ -49,6 +49,13 @@ class NonAtomicMetric implements Metric {
     }
 
     @Override
+    public void updateMax(long delta) {
+        if (delta > value) {
+            value = delta;
+        }
+    }
+
+    @Override
     public void increment() {
         value++;
     }

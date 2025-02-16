@@ -40,8 +40,8 @@ public class TaskExecutionMetricsHolder {
     public static final TaskExecutionMetricsHolder NO_OP_INSTANCE = new TaskExecutionMetricsHolder(new ReadMetricQueue(false,LogLevel.OFF), "");
     
     public TaskExecutionMetricsHolder(ReadMetricQueue readMetrics, String tableName) {
-        taskQueueWaitTime = readMetrics.allotMetric(TASK_QUEUE_WAIT_TIME, tableName);
-        taskEndToEndTime = readMetrics.allotMetric(TASK_END_TO_END_TIME, tableName);
+        taskQueueWaitTime = readMetrics.allotMaxMetric(TASK_QUEUE_WAIT_TIME, tableName);
+        taskEndToEndTime = readMetrics.allotMaxMetric(TASK_END_TO_END_TIME, tableName);
         taskExecutionTime = readMetrics.allotMetric(TASK_EXECUTION_TIME, tableName);
         numTasks = readMetrics.allotMetric(TASK_EXECUTED_COUNTER, tableName);
         numRejectedTasks = readMetrics.allotMetric(TASK_REJECTED_COUNTER, tableName);

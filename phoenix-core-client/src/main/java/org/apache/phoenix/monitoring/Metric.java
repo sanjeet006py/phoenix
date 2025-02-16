@@ -17,6 +17,8 @@
  */
 package org.apache.phoenix.monitoring;
 
+import org.apache.commons.lang3.NotImplementedException;
+
 /**
  * Interface that represents phoenix-internal metric.
  */
@@ -64,5 +66,9 @@ public interface Metric {
      * Set the Metric value as current value
      */
     void set(long value);
+
+    default void updateMax(long value) {
+        throw new NotImplementedException("Not implemented!");
+    }
 }
 

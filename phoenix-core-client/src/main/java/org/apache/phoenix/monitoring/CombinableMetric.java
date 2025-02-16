@@ -29,6 +29,11 @@ public interface CombinableMetric extends Metric {
     
     CombinableMetric clone();
 
+    public enum CombinableType {
+        SUM,
+        MAX
+    }
+
     public class NoOpRequestMetric implements CombinableMetric, Cloneable {
 
         public static final NoOpRequestMetric INSTANCE = new NoOpRequestMetric();
@@ -83,7 +88,6 @@ public interface CombinableMetric extends Metric {
         public CombinableMetric clone(){
             return INSTANCE;
         }
-
     }
 
     

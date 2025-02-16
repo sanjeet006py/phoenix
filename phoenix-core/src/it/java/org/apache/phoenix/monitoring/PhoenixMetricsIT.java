@@ -12,6 +12,7 @@ package org.apache.phoenix.monitoring;
 import static org.apache.hadoop.hbase.HConstants.HBASE_CLIENT_RETRIES_NUMBER;
 import static org.apache.hadoop.hbase.HConstants.ZK_SESSION_TIMEOUT;
 import static org.apache.phoenix.exception.SQLExceptionCode.OPERATION_TIMED_OUT;
+import static org.apache.phoenix.monitoring.CombinableMetric.CombinableType;
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_FAILED_QUERY_COUNTER;
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_FAILED_PHOENIX_CONNECTIONS;
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_HBASE_COUNT_BYTES_REGION_SERVER_RESULTS;
@@ -44,6 +45,7 @@ import static org.apache.phoenix.monitoring.MetricType.MEMORY_CHUNK_BYTES;
 import static org.apache.phoenix.monitoring.MetricType.MUTATION_BATCH_COUNTER;
 import static org.apache.phoenix.monitoring.MetricType.MUTATION_COMMIT_TIME;
 import static org.apache.phoenix.monitoring.MetricType.QUERY_TIMEOUT_COUNTER;
+import static org.apache.phoenix.monitoring.MetricType.RESULT_SET_TIME_MS;
 import static org.apache.phoenix.monitoring.MetricType.TASK_END_TO_END_TIME;
 import static org.apache.phoenix.monitoring.MetricType.TASK_EXECUTED_COUNTER;
 import static org.apache.phoenix.monitoring.MetricType.TASK_EXECUTION_TIME;
@@ -51,6 +53,8 @@ import static org.apache.phoenix.monitoring.MetricType.TASK_QUEUE_WAIT_TIME;
 import static org.apache.phoenix.monitoring.MetricType.UPSERT_COMMIT_TIME;
 import static org.apache.phoenix.util.PhoenixRuntime.TENANT_ID_ATTRIB;
 import static org.apache.phoenix.util.PhoenixRuntime.UPSERT_BATCH_SIZE_ATTRIB;
+import static org.apache.phoenix.util.PhoenixRuntime.getOverAllReadRequestMetricInfo;
+import static org.apache.phoenix.util.PhoenixRuntime.getRequestReadMetricInfo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -75,6 +79,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.metrics2.AbstractMetric;
@@ -137,6 +142,8 @@ public class PhoenixMetricsIT extends BasePhoenixMetricsIT {
     private static final List<MetricType> readMetricsToSkip =
             Lists.newArrayList(TASK_QUEUE_WAIT_TIME, TASK_EXECUTION_TIME, TASK_END_TO_END_TIME,
                     COUNT_MILLS_BETWEEN_NEXTS);
+    private static final List<MetricType> maxTypeCombinableMetrics =
+            Lists.newArrayList(TASK_QUEUE_WAIT_TIME, TASK_END_TO_END_TIME);
     private static final String CUSTOM_URL_STRING = "SESSION";
     private static final AtomicInteger numConnections = new AtomicInteger(0);
     static final String POINT_LOOKUP_SELECT_QUERY = "SELECT J, G, E, (NOW() - I)*24*60*60*1000 FROM"
@@ -1053,6 +1060,17 @@ public class PhoenixMetricsIT extends BasePhoenixMetricsIT {
             }
             return super.getMetric(type);
         }
+
+        @Override
+        public CombinableMetric getMetric(MetricType type, CombinableType combinableType) {
+            if (maxTypeCombinableMetrics.contains(type)) {
+                assertEquals(CombinableType.MAX, combinableType);
+            }
+            else {
+                assertEquals(CombinableType.SUM, combinableType);
+            }
+            return super.getMetric(type, combinableType);
+        }
     }
 
     @Test
@@ -1277,6 +1295,105 @@ public class PhoenixMetricsIT extends BasePhoenixMetricsIT {
                     c.close();
                 } catch (Exception ignore) {}
             }
+        }
+    }
+
+    private long getExpectedReadMetricsValue(ReadMetricQueue readMetricQueue, MetricType type,
+                                             String tableName) {
+        long expectedValue = 0;
+        for(CombinableMetric metric: readMetricQueue.getMetricsQueue(type, tableName)) {
+            if (maxTypeCombinableMetrics.contains(type)) {
+                expectedValue = Math.max(expectedValue, metric.getValue());
+            }
+            else {
+                expectedValue += metric.getValue();
+            }
+        }
+        return expectedValue;
+    }
+
+    private void assertTaskMetrics(Map<MetricType, Long> readMetrics,
+                                   long expectedTaskQueueWaitTime,
+                                   long expectedTaskExecutionTime,
+                                   long expectedTaskEndToEndTime, long expectedTaskCounter) {
+        assertEquals(expectedTaskQueueWaitTime, (long) readMetrics.get(TASK_QUEUE_WAIT_TIME));
+        assertEquals(expectedTaskExecutionTime, (long) readMetrics.get(TASK_EXECUTION_TIME));
+        assertEquals(expectedTaskEndToEndTime, (long) readMetrics.get(TASK_END_TO_END_TIME));
+        assertEquals(expectedTaskCounter, (long) readMetrics.get(TASK_EXECUTED_COUNTER));
+    }
+
+    @Test
+    public void testPhoenixClientQueueWaitTime() throws SQLException, NoSuchFieldException,
+            IllegalAccessException {
+        String tableName = generateUniqueName();
+        String getRows = "SELECT COL1, COL2, PK4, PK2, PK3 FROM " + tableName
+                + " WHERE PK1=? AND PK2=? AND PK3=? AND PK4 IN (?";
+        // Size of Phoenix client thread pool for tests is 10 so, send 20 tasks to haves 2
+        // batches of tasks involving waiting time.
+        int taskCount = 20;
+        for (int i = 1; i < taskCount; i++) {
+            getRows += ", ?";
+        }
+        getRows += ")";
+        final String upsertRows = "UPSERT INTO " + tableName + " VALUES(?, ?, ?, ?, ?, ?)";
+        String creatTableDdl = "CREATE TABLE IF NOT EXISTS " + tableName + " (\n" +
+                "    PK1 CHAR(15) NOT NULL,\n" +
+                "    PK2 CHAR(15) NOT NULL,\n" +
+                "    PK3 DECIMAL NOT NULL,\n" +
+                "    PK4 CHAR(32) NOT NULL,\n" +
+                "    COL1 VARCHAR NOT NULL,\n" +
+                "    COL2 VARCHAR NOT NULL,\n" +
+                "    CONSTRAINT PK PRIMARY KEY (\n" +
+                "        PK1,\n" +
+                "        PK2,\n" +
+                "        PK3,\n" +
+                "        PK4\n" +
+                "    )\n" +
+                ") VERSIONS=1, MULTI_TENANT=true, IMMUTABLE_ROWS=TRUE, REPLICATION_SCOPE=0, " +
+                "DISABLE_BACKUP=true, SALT_BUCKETS=64, UPDATE_CACHE_FREQUENCY=172800000";
+        long vpk3 = 1000;
+        try(Connection conn = DriverManager.getConnection(getUrl())) {
+            PreparedStatement stmt = conn.prepareStatement(upsertRows);
+            stmt.execute(creatTableDdl);
+            for (int i = 1; i <= 64; i++) {
+                stmt.setString(1, "VPK1");
+                stmt.setString(2, "VPK2");
+                stmt.setLong(3, vpk3);
+                stmt.setString(4, "VPK4_" + i);
+                stmt.setString(5, "{i:" + i + "}");
+                stmt.setString(6, "{o:" + i + "}");
+                stmt.executeUpdate();
+            }
+            conn.commit();
+        }
+        try(Connection conn = DriverManager.getConnection(getUrl())) {
+            ThreadPoolExecutor executor =
+                    conn.unwrap(PhoenixConnection.class).getQueryServices().getExecutor();
+            assertEquals(taskCount / 2, executor.getCorePoolSize());
+            PreparedStatement stmt = conn.prepareStatement(getRows);
+            stmt.setString(1, "VPK1");
+            stmt.setString(2, "VPK2");
+            stmt.setLong(3, vpk3);
+            for (int i = 4; i < taskCount + 4; i++) {
+                stmt.setString(i, "VPK4_" + i);
+            }
+            ResultSet rs = stmt.executeQuery();
+            PhoenixResultSet resultSetBeingTested = rs.unwrap(PhoenixResultSet.class);
+            changeInternalStateForTesting(resultSetBeingTested);
+            while(resultSetBeingTested.next()) {}
+            ReadMetricQueue readMetricQueue =
+                    resultSetBeingTested.getContext().getReadMetricsQueue();
+            long expectedTaskQueueWaitTime = getExpectedReadMetricsValue(readMetricQueue,
+                    MetricType.TASK_QUEUE_WAIT_TIME, tableName);
+            long expectedTaskExecutionTime = getExpectedReadMetricsValue(readMetricQueue,
+                    MetricType.TASK_EXECUTION_TIME, tableName);
+            long expectedTaskEndToEndTime = getExpectedReadMetricsValue(readMetricQueue,
+                    MetricType.TASK_END_TO_END_TIME, tableName);
+            long expectedTaskCounter = getExpectedReadMetricsValue(readMetricQueue,
+                    TASK_EXECUTED_COUNTER, tableName);
+            Map<MetricType, Long> readMetrics = getRequestReadMetricInfo(rs).get(tableName);
+            assertTaskMetrics(readMetrics, expectedTaskQueueWaitTime, expectedTaskExecutionTime,
+                    expectedTaskEndToEndTime, expectedTaskCounter);
         }
     }
 

@@ -20,13 +20,15 @@ package org.apache.phoenix.monitoring;
 public class CombinableMetricImpl implements CombinableMetric, Cloneable {
 
     private final Metric metric;
+    private final CombinableType combinableType;
 
     public CombinableMetricImpl(MetricType type) {
-        metric = new NonAtomicMetric(type);
+        this(type, CombinableType.SUM);
     }
-    
-    private CombinableMetricImpl(Metric metric) {
-        this.metric = metric;
+
+    public CombinableMetricImpl(MetricType type, CombinableType combinableType) {
+        metric = new NonAtomicMetric(type);
+        this.combinableType = combinableType;
     }
 
     @Override
@@ -41,7 +43,11 @@ public class CombinableMetricImpl implements CombinableMetric, Cloneable {
 
     @Override
     public void change(long delta) {
-        metric.change(delta);
+        if (combinableType == CombinableType.MAX) {
+            metric.updateMax(delta);
+        } else {
+            metric.change(delta);
+        }
     }
 
     @Override
@@ -76,7 +82,7 @@ public class CombinableMetricImpl implements CombinableMetric, Cloneable {
 
     @Override
     public CombinableMetric combine(CombinableMetric metric) {
-        this.metric.change(metric.getValue());
+        change(metric.getValue());
         return this;
     }
 
@@ -87,9 +93,9 @@ public class CombinableMetricImpl implements CombinableMetric, Cloneable {
     
     @Override
     public CombinableMetric clone(){
-        NonAtomicMetric metric = new NonAtomicMetric(this.metric.getMetricType());
+        CombinableMetric metric = new CombinableMetricImpl(this.metric.getMetricType(),
+                combinableType);
         metric.change(this.metric.getValue());
-        return new CombinableMetricImpl(metric);
+        return metric;
     }
-
 }

@@ -27,6 +27,7 @@ import javax.annotation.Nonnull;
 
 import org.apache.phoenix.log.LogLevel;
 import org.apache.phoenix.monitoring.CombinableMetric.NoOpRequestMetric;
+import org.apache.phoenix.monitoring.CombinableMetric.CombinableType;
 
 import org.apache.phoenix.thirdparty.com.google.common.annotations.VisibleForTesting;
 
@@ -51,11 +52,12 @@ public class ReadMetricQueue {
         this.connectionLogLevel = connectionLogLevel;
     }
 
-    public CombinableMetric allotMetric(MetricType type, String tableName) {
+    private CombinableMetric allotMetricInternal(MetricType type, String tableName,
+                                                 CombinableType combinableType) {
         if (type.isLoggingEnabled(connectionLogLevel) || isRequestMetricsEnabled) {
             MetricKey key = new MetricKey(type, tableName);
             Queue<CombinableMetric> q = getMetricQueue(key);
-            CombinableMetric metric = getMetric(type);
+            CombinableMetric metric = getMetric(type, combinableType);
             q.offer(metric);
             return metric;
         } else {
@@ -63,9 +65,27 @@ public class ReadMetricQueue {
         }
     }
 
+    public CombinableMetric allotMetric(MetricType type, String tableName) {
+        return allotMetricInternal(type, tableName, CombinableType.SUM);
+    }
+
+    public CombinableMetric allotMaxMetric(MetricType type, String tableName) {
+        return allotMetricInternal(type, tableName, CombinableType.MAX);
+    }
+
     @VisibleForTesting
     public CombinableMetric getMetric(MetricType type) {
-        CombinableMetric metric = new CombinableMetricImpl(type);
+        return getMetric(type, CombinableType.SUM);
+    }
+
+    public CombinableMetric getMetric(MetricType type, CombinableType combinableType) {
+        CombinableMetric metric;
+        if (combinableType == CombinableType.MAX) {
+            metric = new CombinableMetricImpl(type, CombinableType.MAX);
+        }
+        else {
+            metric = new CombinableMetricImpl(type, CombinableType.SUM);
+        }
         return metric;
     }
 
@@ -192,6 +212,11 @@ public class ReadMetricQueue {
     
     public boolean isRequestMetricsEnabled() {
         return isRequestMetricsEnabled;
-    }    
+    }
 
+    @VisibleForTesting
+    public Queue<CombinableMetric> getMetricsQueue(MetricType type, String tableName) {
+        MetricKey key = new MetricKey(type, tableName);
+        return metricsMap.get(key);
+    }
 }
