@@ -604,6 +604,7 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
     TableRef tableRef = plan.getTableRef();
     PTable table = tableRef.getTable();
     physicalTableName = table.getPhysicalName().getBytes();
+    String physicalTableNameString = Bytes.toString(physicalTableName);
     Long currentSCN = context.getConnection().getSCN();
     if (null == currentSCN) {
       currentSCN = HConstants.LATEST_TIMESTAMP;

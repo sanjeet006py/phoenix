@@ -273,6 +273,11 @@ public abstract class RegionScannerFactory {
               ImmutableBytesWritable ptr = new ImmutableBytesWritable();
               extraWhere.evaluate(merged, ptr);
               if (!Boolean.TRUE.equals(extraWhere.getDataType().toObject(ptr))) {
+                System.out.println("Extra where filter did not pass for row "
+                  + Bytes.toString(result.get(0).getRowArray(), result.get(0).getRowOffset(),
+                    result.get(0).getRowLength()));
+                System.out.println("Extra where filter: " + extraWhere.toString());
+                System.out.println("Result: " + result.toString() + " scanner context: " + scannerContext);
                 result.clear();
                 return next;
               }

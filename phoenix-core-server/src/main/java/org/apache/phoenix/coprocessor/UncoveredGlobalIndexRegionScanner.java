@@ -118,6 +118,8 @@ public class UncoveredGlobalIndexRegionScanner extends UncoveredIndexRegionScann
       return;
     }
     try (ResultScanner resultScanner = dataHTable.getScanner(dataScan)) {
+      String physicalTableNameString = dataHTable.getName().toString();
+      int rowCount = 0;
       for (Result result = resultScanner.next(); (result != null); result = resultScanner.next()) {
         if (ScanUtil.isDummy(result)) {
           state = State.SCANNING_DATA_INTERRUPTED;
@@ -128,7 +130,9 @@ public class UncoveredGlobalIndexRegionScanner extends UncoveredIndexRegionScann
           state = State.SCANNING_DATA_INTERRUPTED;
           break;
         }
+        rowCount++;
       }
+      LOGGER.info("Scanned {} data table rows from {}", rowCount, physicalTableNameString);
       if (state == State.SCANNING_DATA_INTERRUPTED) {
         LOGGER.info("One of the scan tasks in UncoveredGlobalIndexRegionScanner" + " for region "
           + region.getRegionInfo().getRegionNameAsString() + " could not complete on time (in "

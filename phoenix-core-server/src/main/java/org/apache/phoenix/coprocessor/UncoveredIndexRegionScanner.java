@@ -418,6 +418,7 @@ public abstract class UncoveredIndexRegionScanner extends BaseRegionScanner {
         }
         if (state == State.SCANNING_INDEX) {
           hasMore = scanIndexTableRows(result, scannerContext);
+          LOGGER.info("Scanned {} index rows from {}", indexRows.size(), region.getTableDescriptor().getTableName().toString());
           if (isDummy(result)) {
             updateDummyWithPrevRowKey(result, initStartRowKey, includeInitStartRowKey, scan);
             return hasMore;
