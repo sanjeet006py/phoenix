@@ -23,23 +23,25 @@ import java.lang.reflect.Field;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
-import java.util.List;
+import java.sql.ResultSet;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HRegionLocation;
-import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.ConnectionImplementation;
 import org.apache.hadoop.hbase.client.MetricsConnection;
-import org.apache.hadoop.hbase.client.RegionLocator;
 import static org.apache.phoenix.util.TestUtil.TEST_PROPERTIES;
 
 import org.apache.phoenix.end2end.NeedsOwnMiniClusterTest;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.query.BaseTest;
+import org.apache.phoenix.query.ConnectionQueryServices;
+import org.apache.phoenix.query.ConnectionQueryServicesImpl;
+import org.apache.phoenix.query.DelegateConnectionQueryServices;
+import org.apache.phoenix.query.QueryServices;
 import org.apache.phoenix.util.PropertiesUtil;
 import org.apache.phoenix.util.ReadOnlyProps;
 import org.apache.phoenix.thirdparty.com.google.common.collect.Maps;
@@ -57,6 +59,11 @@ public class MetaScannerCachingIT extends BaseTest {
   @BeforeClass
   public static synchronized void doSetup() throws Exception {
     Map<String, String> props = Maps.newHashMapWithExpectedSize(1);
+    // Bulk warmup is the Phoenix-API surface that drives a meta scan via
+    // RegionLocator.getAllRegionLocations() under the hood. It is gated to
+    // salted-table point lookups inside BaseResultIterators.bulkWarmupMetaCache.
+    props.put(QueryServices.PHOENIX_REGION_LOCATION_BULK_WARMUP_ENABLED,
+        String.valueOf(true));
     setUpTestDriver(new ReadOnlyProps(props.entrySet().iterator()));
   }
 
@@ -67,16 +74,8 @@ public class MetaScannerCachingIT extends BaseTest {
 
     try (Connection conn = DriverManager.getConnection(getUrl(), props)) {
       tableName = generateUniqueName();
-      StringBuilder splitPoints = new StringBuilder("SPLIT ON (");
-      for (int i = 1; i <= 50; i++) {
-        if (i > 1) {
-          splitPoints.append(", ");
-        }
-        splitPoints.append(i);
-      }
-      splitPoints.append(")");
       conn.createStatement().execute("CREATE TABLE " + tableName
-          + " (k INTEGER NOT NULL PRIMARY KEY, v VARCHAR) " + splitPoints);
+          + " (k INTEGER NOT NULL PRIMARY KEY, v VARCHAR) SALT_BUCKETS = 50");
 
       PreparedStatement upsert =
           conn.prepareStatement("UPSERT INTO " + tableName + " VALUES(?, ?)");
@@ -88,16 +87,17 @@ public class MetaScannerCachingIT extends BaseTest {
       conn.commit();
     }
 
-    TableName hbaseTableName = TableName.valueOf(tableName);
+    long deltaSmallCaching;
+    long deltaLargeCaching;
 
-    Configuration baseConf;
     try (Connection conn = DriverManager.getConnection(getUrl(), props)) {
-      baseConf = conn.unwrap(PhoenixConnection.class)
-          .getQueryServices().getConfiguration();
-    }
+      ConnectionQueryServicesImpl cqsi = unwrapToCQSI(
+          conn.unwrap(PhoenixConnection.class).getQueryServices());
+      Configuration baseConf = cqsi.getConfiguration();
 
-    long deltaSmallCaching = measureScanRpcCount(baseConf, hbaseTableName, 5);
-    long deltaLargeCaching = measureScanRpcCount(baseConf, hbaseTableName, 100);
+      deltaSmallCaching = measureSelectScanRpcs(conn, cqsi, baseConf, tableName, 5);
+      deltaLargeCaching = measureSelectScanRpcs(conn, cqsi, baseConf, tableName, 100);
+    }
 
     LOGGER.info("Scan RPCs with caching=5: {}, caching=100: {}",
         deltaSmallCaching, deltaLargeCaching);
@@ -107,28 +107,67 @@ public class MetaScannerCachingIT extends BaseTest {
         deltaSmallCaching > deltaLargeCaching);
   }
 
-  private long measureScanRpcCount(Configuration baseConf, TableName tableName,
-      int metaScannerCaching) throws Exception {
+  /**
+   * Drives the meta scan through a Phoenix JDBC SELECT -- point lookups on a
+   * salted table trigger {@code BaseResultIterators.bulkWarmupMetaCache},
+   * which calls CQSI's {@code warmupAllRegionLocationsBlocking}, which in turn
+   * calls {@code RegionLocator.getAllRegionLocations()} against CQSI's HBase
+   * Connection. To attribute scan RPCs to a specific
+   * {@code hbase.meta.scanner.caching} value, we temporarily swap CQSI's HBase
+   * Connection with a probe configured for the requested caching, run the
+   * Phoenix query, then restore the original.
+   */
+  private long measureSelectScanRpcs(Connection conn, ConnectionQueryServicesImpl cqsi,
+      Configuration baseConf, String tableName, int metaScannerCaching)
+      throws Exception {
     Configuration conf = new Configuration(baseConf);
     conf.setInt(HConstants.HBASE_META_SCANNER_CACHING, metaScannerCaching);
     conf.setBoolean(MetricsConnection.CLIENT_SIDE_METRICS_ENABLED_KEY, true);
 
-    try (org.apache.hadoop.hbase.client.Connection hbaseConn =
-             ConnectionFactory.createConnection(conf)) {
+    Field connField =
+        ConnectionQueryServicesImpl.class.getDeclaredField("connection");
+    connField.setAccessible(true);
+    org.apache.hadoop.hbase.client.Connection original =
+        (org.apache.hadoop.hbase.client.Connection) connField.get(cqsi);
+
+    Field warmupsField =
+        ConnectionQueryServicesImpl.class.getDeclaredField("bulkRegionWarmups");
+    warmupsField.setAccessible(true);
+    ConcurrentHashMap<?, ?> warmups =
+        (ConcurrentHashMap<?, ?>) warmupsField.get(cqsi);
+
+    try (org.apache.hadoop.hbase.client.Connection probe =
+            ConnectionFactory.createConnection(conf)) {
+      connField.set(cqsi, probe);
+      // Drop any cached completed future so the next SELECT actually runs
+      // warmup against the probe.
+      warmups.clear();
 
       MetricsConnection metrics =
-          ((ConnectionImplementation) hbaseConn).getConnectionMetrics();
+          ((ConnectionImplementation) probe).getConnectionMetrics();
       long scansBefore = getScanCallCount(metrics);
 
-      try (RegionLocator locator = hbaseConn.getRegionLocator(tableName)) {
-        List<HRegionLocation> locations = locator.getAllRegionLocations();
-        LOGGER.info("getAllRegionLocations returned {} locations with caching={}",
-            locations.size(), metaScannerCaching);
+      ResultSet rs = conn.createStatement()
+          .executeQuery("SELECT * FROM " + tableName
+              + " WHERE k IN (1, 5, 9, 13, 17, 23, 29, 37, 41, 47)");
+      while (rs.next()) {
       }
 
       long scansAfter = getScanCallCount(metrics);
-      return scansAfter - scansBefore;
+      long delta = scansAfter - scansBefore;
+      LOGGER.info("Phoenix SELECT with caching={}: scan RPCs={}",
+          metaScannerCaching, delta);
+      return delta;
+    } finally {
+      connField.set(cqsi, original);
     }
+  }
+
+  private static ConnectionQueryServicesImpl unwrapToCQSI(ConnectionQueryServices svc) {
+    while (svc instanceof DelegateConnectionQueryServices) {
+      svc = ((DelegateConnectionQueryServices) svc).getDelegate();
+    }
+    return (ConnectionQueryServicesImpl) svc;
   }
 
   private long getScanCallCount(MetricsConnection metrics) throws Exception {

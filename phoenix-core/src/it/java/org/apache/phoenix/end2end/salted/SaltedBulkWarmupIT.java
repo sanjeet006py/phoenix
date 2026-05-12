@@ -23,7 +23,10 @@ import static org.apache.phoenix.monitoring.MetricType.REGION_LOCATION_BULK_WARM
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -35,6 +38,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.apache.phoenix.util.TestUtil.TEST_PROPERTIES;
 
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.phoenix.end2end.NeedsOwnMiniClusterTest;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.monitoring.MetricType;
@@ -162,6 +166,15 @@ public class SaltedBulkWarmupIT extends BaseTest {
       conn.createStatement().execute("CREATE TABLE " + tableName
           + " (k INTEGER NOT NULL PRIMARY KEY, v VARCHAR) SALT_BUCKETS = 4");
 
+      PreparedStatement upsert =
+          conn.prepareStatement("UPSERT INTO " + tableName + " VALUES(?, ?)");
+      for (int i = 1; i <= 10; i++) {
+        upsert.setInt(1, i);
+        upsert.setString(2, "val" + i);
+        upsert.execute();
+      }
+      conn.commit();
+
       ConnectionQueryServicesImpl cqsi = unwrapToCQSI(
           conn.unwrap(PhoenixConnection.class).getQueryServices());
 
@@ -177,26 +190,52 @@ public class SaltedBulkWarmupIT extends BaseTest {
       ConcurrentHashMap<?, ?> warmups =
           (ConcurrentHashMap<?, ?>) warmupsField.get(cqsi);
 
-      connField.set(cqsi, null);
+      // Baseline (before): warmup runs against the real connection and should
+      // succeed, so the failed counter stays at 0.
+      ResultSet baselineRs = conn.createStatement()
+          .executeQuery("SELECT * FROM " + tableName + " WHERE k IN (1, 2, 3)");
+      while (baselineRs.next()) {
+      }
+      Map<MetricType, Long> metricsBefore =
+          PhoenixRuntime.getOverAllReadRequestMetricInfo(baselineRs);
+      long failedBefore =
+          metricsBefore.get(REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER);
+      assertEquals("Baseline FAILED counter must be 0 before fault injection",
+          0L, failedBefore);
+
+      // Drop the cached completed warmup so the next query re-attempts warmup
+      // against the proxied (failing) HBase connection.
       warmups.clear();
 
-      byte[] tableBytes = TableName.valueOf(tableName).getName();
-      boolean threw = false;
+      // Install a Connection proxy whose RegionLocator throws from
+      // getAllRegionLocations() but otherwise delegates faithfully -- so the
+      // regular query path (which uses RegionLocator.getRegionLocation) still
+      // works and the SELECT itself succeeds.
+      org.apache.hadoop.hbase.client.Connection failingConn =
+          newFailingHBaseConnection(realHBaseConn);
+      connField.set(cqsi, failingConn);
+
+      Map<MetricType, Long> metricsAfter;
       try {
-        cqsi.warmupAllRegionLocationsBlocking(tableBytes, 5000L);
-      } catch (RuntimeException expected) {
-        threw = true;
+        ResultSet rs = conn.createStatement()
+            .executeQuery("SELECT * FROM " + tableName + " WHERE k IN (4, 5, 6)");
+        while (rs.next()) {
+        }
+        metricsAfter = PhoenixRuntime.getOverAllReadRequestMetricInfo(rs);
       } finally {
         connField.set(cqsi, realHBaseConn);
       }
-      assertTrue("Expected warmup to throw on null connection", threw);
-      assertTrue("Expected failed future to be removed from cache",
-          warmups.isEmpty());
 
-      warmups.clear();
-      cqsi.warmupAllRegionLocationsBlocking(tableBytes, 5000L);
-      assertTrue("Expected warmup to succeed after connection restored",
-          warmups.containsKey(TableName.valueOf(tableName)));
+      long failedAfter =
+          metricsAfter.get(REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER);
+      assertEquals(1L,
+          (long) metricsAfter.get(REGION_LOCATION_BULK_WARMUP_INVOKED_COUNTER));
+      assertTrue("Expected FAILED counter to increment under injected "
+              + "getAllRegionLocations() failure: before=" + failedBefore
+              + " after=" + failedAfter,
+          failedAfter > failedBefore);
+      assertTrue("Expected failed warmup future to be removed from cache",
+          !warmups.containsKey(TableName.valueOf(tableName)));
     }
   }
 
@@ -205,5 +244,42 @@ public class SaltedBulkWarmupIT extends BaseTest {
       svc = ((DelegateConnectionQueryServices) svc).getDelegate();
     }
     return (ConnectionQueryServicesImpl) svc;
+  }
+
+  private static org.apache.hadoop.hbase.client.Connection newFailingHBaseConnection(
+      org.apache.hadoop.hbase.client.Connection real) {
+    return (org.apache.hadoop.hbase.client.Connection) Proxy.newProxyInstance(
+        SaltedBulkWarmupIT.class.getClassLoader(),
+        new Class<?>[] {org.apache.hadoop.hbase.client.Connection.class},
+        (proxy, method, args) -> {
+          if ("getRegionLocator".equals(method.getName())
+              && args != null && args.length == 1
+              && args[0] instanceof TableName) {
+            return newFailingRegionLocator(
+                real.getRegionLocator((TableName) args[0]));
+          }
+          try {
+            return method.invoke(real, args);
+          } catch (InvocationTargetException ite) {
+            throw ite.getCause();
+          }
+        });
+  }
+
+  private static RegionLocator newFailingRegionLocator(RegionLocator delegate) {
+    return (RegionLocator) Proxy.newProxyInstance(
+        SaltedBulkWarmupIT.class.getClassLoader(),
+        new Class<?>[] {RegionLocator.class},
+        (proxy, method, args) -> {
+          if ("getAllRegionLocations".equals(method.getName())) {
+            throw new IOException(
+                "Injected getAllRegionLocations failure for test");
+          }
+          try {
+            return method.invoke(delegate, args);
+          } catch (InvocationTargetException ite) {
+            throw ite.getCause();
+          }
+        });
   }
 }

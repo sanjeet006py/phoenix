@@ -136,6 +136,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -1032,19 +1033,27 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices
     if (waitMs < 0) {
       return;
     }
+    Exception cause = null;
     try {
       warmup.get(waitMs, TimeUnit.MILLISECONDS);
     } catch (TimeoutException te) {
       LOGGER.warn("Bulk warmup for {} did not complete within {}ms; "
-          + "proceeding with current cache state", table.getNameAsString(), waitMs);
+        + "proceeding with current cache state", table.getNameAsString(), waitMs);
+      cause = te;
     } catch (InterruptedException ie) {
-      Thread.currentThread().interrupt();
+      LOGGER.warn("Interrupted while waiting for bulk warmup of {}; "
+        + "restoring interrupt flag and returning", table.getNameAsString(), ie);
+      return;
     } catch (ExecutionException ee) {
       LOGGER.warn("Bulk warmup for {} failed", table.getNameAsString(), ee);
+      cause = ee;
+    } catch (CancellationException ce) {
+      LOGGER.warn("Bulk warmup for {} was cancelled", table.getNameAsString(), ce);
+      cause = ce;
     }
     if (warmup.isDone() && !bulkRegionWarmups.containsKey(table)) {
       throw new RuntimeException("Bulk region location warmup failed for "
-          + table.getNameAsString());
+          + table.getNameAsString(), cause);
     }
   }
 
