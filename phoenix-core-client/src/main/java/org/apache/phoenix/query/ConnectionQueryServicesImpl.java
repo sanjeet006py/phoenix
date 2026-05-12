@@ -86,6 +86,8 @@ import static org.apache.phoenix.query.QueryConstants.DEFAULT_COLUMN_FAMILY;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_CQSI_THREAD_POOL_ALLOW_CORE_THREAD_TIMEOUT;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_CQSI_THREAD_POOL_CORE_POOL_SIZE;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_CQSI_THREAD_POOL_ENABLED;
+import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_PHOENIX_REGION_LOCATION_BULK_WARMUP_ENABLED;
+import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_PHOENIX_REGION_LOCATION_BULK_WARMUP_THREADS;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_CQSI_THREAD_POOL_KEEP_ALIVE_SECONDS;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_CQSI_THREAD_POOL_MAX_QUEUE;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_CQSI_THREAD_POOL_MAX_THREADS;
@@ -178,6 +180,7 @@ import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
@@ -439,6 +442,10 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices
   private MetricsMetadataCachingSource metricsMetadataCachingSource;
   private ThreadPoolExecutor threadPoolExecutor = null;
   private static final AtomicInteger threadPoolNumber = new AtomicInteger(1);
+  private final ConcurrentHashMap<TableName, CompletableFuture<Void>>
+      bulkRegionWarmups = new ConcurrentHashMap<>();
+  private ExecutorService bulkRegionWarmupExecutor = null;
+  private boolean bulkWarmupEnabled = false;
   public static final String INVALIDATE_SERVER_METADATA_CACHE_EX_MESSAGE =
     "Cannot invalidate server metadata cache on a non-server connection";
 
@@ -543,8 +550,23 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices
         finalConfig.get(CQSI_THREAD_POOL_ALLOW_CORE_THREAD_TIMEOUT));
     }
 
+    this.bulkWarmupEnabled = finalConfig.getBoolean(
+        PHOENIX_REGION_LOCATION_BULK_WARMUP_ENABLED,
+        DEFAULT_PHOENIX_REGION_LOCATION_BULK_WARMUP_ENABLED);
+    if (this.bulkWarmupEnabled) {
+      int warmupThreads = finalConfig.getInt(
+          PHOENIX_REGION_LOCATION_BULK_WARMUP_THREADS,
+          DEFAULT_PHOENIX_REGION_LOCATION_BULK_WARMUP_THREADS);
+      this.bulkRegionWarmupExecutor = Executors.newFixedThreadPool(warmupThreads,
+          new ThreadFactoryBuilder()
+              .setNameFormat("phoenix-region-bulk-warmup-%d")
+              .setDaemon(true)
+              .build());
+      LOGGER.info("Bulk region location warmup executor created with {} threads", warmupThreads);
+    }
+
     LOGGER.info(
-      "CQS Configs {} = {} , {} = {} , {} = {} , {} = {} , {} = {} , {} = {} , {} = {}, {} = {}",
+      "CQS Configs {} = {} , {} = {} , {} = {} , {} = {} , {} = {} , {} = {} , {} = {}, {} = {}, {} = {}",
       HConstants.ZOOKEEPER_QUORUM, finalConfig.get(HConstants.ZOOKEEPER_QUORUM),
       HConstants.CLIENT_ZOOKEEPER_QUORUM, finalConfig.get(HConstants.CLIENT_ZOOKEEPER_QUORUM),
       HConstants.CLIENT_ZOOKEEPER_CLIENT_PORT,
@@ -555,7 +577,9 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices
       ConnectionInfo.CLIENT_CONNECTION_REGISTRY_IMPL_CONF_KEY,
       finalConfig.get(ConnectionInfo.CLIENT_CONNECTION_REGISTRY_IMPL_CONF_KEY),
       QueryServices.CQSI_THREAD_POOL_ENABLED,
-      finalConfig.get(QueryServices.CQSI_THREAD_POOL_ENABLED));
+      finalConfig.get(QueryServices.CQSI_THREAD_POOL_ENABLED),
+      QueryServices.PHOENIX_REGION_LOCATION_BULK_WARMUP_ENABLED,
+      finalConfig.get(QueryServices.PHOENIX_REGION_LOCATION_BULK_WARMUP_ENABLED));
 
     // Set the rpcControllerFactory if it is a server side connnection.
     boolean isServerSideConnection = config.getBoolean(QueryUtil.IS_SERVER_CONNECTION, false);
@@ -844,6 +868,9 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices
             if (renewLeaseExecutor != null) {
               renewLeaseExecutor.shutdownNow();
             }
+            if (bulkRegionWarmupExecutor != null) {
+              bulkRegionWarmupExecutor.shutdownNow();
+            }
             // shut down the tx client service if we created one to support transactions
             for (PhoenixTransactionClient client : txClients) {
               if (client != null) {
@@ -986,6 +1013,47 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices
     throws SQLException {
     return getTableRegions(tableName, HConstants.EMPTY_START_ROW, HConstants.EMPTY_END_ROW,
       queryTimeout);
+  }
+
+  public void warmupAllRegionLocationsBlocking(byte[] tableName, long waitMs) {
+    if (!bulkWarmupEnabled || bulkRegionWarmupExecutor == null) {
+      return;
+    }
+    TableName table = TableName.valueOf(tableName);
+    CompletableFuture<Void> warmup = bulkRegionWarmups
+        .computeIfAbsent(table, t -> CompletableFuture.runAsync(
+                () -> doBulkWarmup(t), bulkRegionWarmupExecutor)
+            .exceptionally(ex -> {
+              LOGGER.warn("Bulk region location warmup failed for {}",
+                  t.getNameAsString(), ex);
+              bulkRegionWarmups.remove(t);
+              return null;
+            }));
+    if (waitMs < 0) {
+      return;
+    }
+    try {
+      warmup.get(waitMs, TimeUnit.MILLISECONDS);
+    } catch (TimeoutException te) {
+      LOGGER.warn("Bulk warmup for {} did not complete within {}ms; "
+          + "proceeding with current cache state", table.getNameAsString(), waitMs);
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+    } catch (ExecutionException ee) {
+      LOGGER.warn("Bulk warmup for {} failed", table.getNameAsString(), ee);
+    }
+    if (warmup.isDone() && !bulkRegionWarmups.containsKey(table)) {
+      throw new RuntimeException("Bulk region location warmup failed for "
+          + table.getNameAsString());
+    }
+  }
+
+  private void doBulkWarmup(TableName tableName) {
+    try (RegionLocator locator = connection.getRegionLocator(tableName)) {
+      locator.getAllRegionLocations();
+    } catch (IOException e) {
+      throw new CompletionException(e);
+    }
   }
 
   /**

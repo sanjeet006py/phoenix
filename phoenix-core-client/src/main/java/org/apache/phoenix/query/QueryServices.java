@@ -651,6 +651,13 @@ public interface QueryServices extends SQLCloseable {
   // values.
   String SCAN_METRICS_BY_REGION_ENABLED = "phoenix.scan.metrics.by.region.enabled";
 
+  String PHOENIX_REGION_LOCATION_BULK_WARMUP_ENABLED =
+      "phoenix.region.location.bulk.warmup.enabled";
+  String PHOENIX_REGION_LOCATION_BULK_WARMUP_THREADS =
+      "phoenix.region.location.bulk.warmup.threads";
+  String PHOENIX_REGION_LOCATION_BULK_WARMUP_WAIT_MS =
+      "phoenix.region.location.bulk.warmup.wait.ms";
+
   /**
    * Get executor service used for parallel scans
    */

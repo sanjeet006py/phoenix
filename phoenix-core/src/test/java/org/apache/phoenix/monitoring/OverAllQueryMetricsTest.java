@@ -27,6 +27,9 @@ import static org.apache.phoenix.monitoring.MetricType.QUERY_RESULT_ITR_TIME_MS;
 import static org.apache.phoenix.monitoring.MetricType.QUERY_TIMEOUT_COUNTER;
 import static org.apache.phoenix.monitoring.MetricType.RESULT_SET_TIME_MS;
 import static org.apache.phoenix.monitoring.MetricType.SQL_QUERY_PARSING_TIME_MS;
+import static org.apache.phoenix.monitoring.MetricType.REGION_LOCATION_BULK_WARMUP_ELAPSED_MS;
+import static org.apache.phoenix.monitoring.MetricType.REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER;
+import static org.apache.phoenix.monitoring.MetricType.REGION_LOCATION_BULK_WARMUP_INVOKED_COUNTER;
 import static org.apache.phoenix.monitoring.MetricType.WALL_CLOCK_TIME_MS;
 import static org.junit.Assert.assertEquals;
 
@@ -139,6 +142,48 @@ public class OverAllQueryMetricsTest {
       queryTimeouts + otherQueryTimeouts, queryFailures + otherQueryFailures,
       cacheRefreshesDueToSplits + otherCacheRefreshes, 0L, 2 * delta, 2 * delta, 2 * delta,
       2 * delta);
+  }
+
+  @Test
+  public void testBulkWarmupMetrics() {
+    OverAllQueryMetrics metrics = new OverAllQueryMetrics(true, LogLevel.TRACE);
+
+    metrics.regionLocationBulkWarmupInvoked();
+    metrics.setRegionLocationBulkWarmupElapsedMs(42L);
+
+    Map<MetricType, Long> published = metrics.publish();
+    assertEquals(1L, (long) published.get(REGION_LOCATION_BULK_WARMUP_INVOKED_COUNTER));
+    assertEquals(0L, (long) published.get(REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER));
+    assertEquals(42L, (long) published.get(REGION_LOCATION_BULK_WARMUP_ELAPSED_MS));
+
+    metrics.regionLocationBulkWarmupFailed();
+    published = metrics.publish();
+    assertEquals(1L, (long) published.get(REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER));
+
+    metrics.reset();
+    published = metrics.publish();
+    assertEquals(0L, (long) published.get(REGION_LOCATION_BULK_WARMUP_INVOKED_COUNTER));
+    assertEquals(0L, (long) published.get(REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER));
+    assertEquals(0L, (long) published.get(REGION_LOCATION_BULK_WARMUP_ELAPSED_MS));
+  }
+
+  @Test
+  public void testBulkWarmupMetricsCombine() {
+    OverAllQueryMetrics m1 = new OverAllQueryMetrics(true, LogLevel.TRACE);
+    OverAllQueryMetrics m2 = new OverAllQueryMetrics(true, LogLevel.TRACE);
+
+    m1.regionLocationBulkWarmupInvoked();
+    m1.setRegionLocationBulkWarmupElapsedMs(100L);
+
+    m2.regionLocationBulkWarmupInvoked();
+    m2.regionLocationBulkWarmupFailed();
+    m2.setRegionLocationBulkWarmupElapsedMs(200L);
+
+    OverAllQueryMetrics combined = m1.combine(m2);
+    Map<MetricType, Long> published = combined.publish();
+    assertEquals(2L, (long) published.get(REGION_LOCATION_BULK_WARMUP_INVOKED_COUNTER));
+    assertEquals(1L, (long) published.get(REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER));
+    assertEquals(300L, (long) published.get(REGION_LOCATION_BULK_WARMUP_ELAPSED_MS));
   }
 
   @Test

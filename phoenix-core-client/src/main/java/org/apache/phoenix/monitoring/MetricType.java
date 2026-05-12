@@ -353,6 +353,15 @@ public enum MetricType {
     LogLevel.DEBUG, PLong.INSTANCE),
   HA_PARALLEL_CONNECTION_CREATED_COUNTER("hpccc",
     "Counter for the number of parallel phoenix connections that were created", LogLevel.DEBUG,
+    PLong.INSTANCE),
+  REGION_LOCATION_BULK_WARMUP_INVOKED_COUNTER("rlbwi",
+    "Number of times a bulk region-location warmup was invoked for this query", LogLevel.DEBUG,
+    PLong.INSTANCE),
+  REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER("rlbwf",
+    "Number of times a bulk region-location warmup failed for this query", LogLevel.DEBUG,
+    PLong.INSTANCE),
+  REGION_LOCATION_BULK_WARMUP_ELAPSED_MS("rlbwe",
+    "Time in ms this query spent waiting on the bulk region-location warmup", LogLevel.DEBUG,
     PLong.INSTANCE);
 
   private final String description;

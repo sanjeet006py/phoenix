@@ -24,7 +24,9 @@ import static org.apache.phoenix.coprocessorclient.BaseScannerRegionObserverCons
 import static org.apache.phoenix.exception.SQLExceptionCode.OPERATION_TIMED_OUT;
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_FAILED_QUERY_COUNTER;
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_QUERY_TIMEOUT_COUNTER;
+import static org.apache.phoenix.query.QueryServices.PHOENIX_REGION_LOCATION_BULK_WARMUP_WAIT_MS;
 import static org.apache.phoenix.query.QueryServices.WILDCARD_QUERY_DYNAMIC_COLS_ATTRIB;
+import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_PHOENIX_REGION_LOCATION_BULK_WARMUP_WAIT_MS;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_WILDCARD_QUERY_DYNAMIC_COLS_ATTRIB;
 import static org.apache.phoenix.schema.PTable.IndexType.LOCAL;
 import static org.apache.phoenix.schema.PTable.QualifierEncodingScheme.NON_ENCODED_QUALIFIERS;
@@ -90,6 +92,8 @@ import org.apache.phoenix.parse.FilterableStatement;
 import org.apache.phoenix.parse.HintNode;
 import org.apache.phoenix.parse.HintNode.Hint;
 import org.apache.phoenix.query.ConnectionQueryServices;
+import org.apache.phoenix.query.ConnectionQueryServicesImpl;
+import org.apache.phoenix.query.DelegateConnectionQueryServices;
 import org.apache.phoenix.query.KeyRange;
 import org.apache.phoenix.query.QueryConstants;
 import org.apache.phoenix.query.QueryServices;
@@ -1098,6 +1102,7 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
             .addAll(getRegionBoundaries(scanGrouper, saltStartRegionKey, saltStopRegionKey));
         }
       } else {
+        bulkWarmupMetaCache();
         // If scan start and end rowkeys are empty, we end up fetching all region locations.
         regionLocations =
           getRegionBoundaries(scanGrouper, startRegionBoundaryKey, stopRegionBoundaryKey);
@@ -1912,6 +1917,42 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
   @VisibleForTesting
   public static void setForTestingSetTimeoutToMaxToLetQueryPassHere(boolean setTimeoutToMax) {
     forTestingSetTimeoutToMaxToLetQueryPassHere = setTimeoutToMax;
+  }
+
+  private void bulkWarmupMetaCache() {
+    ConnectionQueryServices svc = context.getConnection().getQueryServices();
+    ConnectionQueryServicesImpl svcImpl = unwrapToImpl(svc);
+    if (svcImpl == null) {
+      return;
+    }
+    OverAllQueryMetrics metrics = context.getOverallQueryMetrics();
+    metrics.regionLocationBulkWarmupInvoked();
+    long startTime = EnvironmentEdgeManager.currentTimeMillis();
+    try {
+      svcImpl.warmupAllRegionLocationsBlocking(physicalTableName, computeBulkWarmupWaitMs());
+    } catch (Exception e) {
+      metrics.regionLocationBulkWarmupFailed();
+    } finally {
+      metrics.setRegionLocationBulkWarmupElapsedMs(
+          EnvironmentEdgeManager.currentTimeMillis() - startTime);
+    }
+  }
+
+  private long computeBulkWarmupWaitMs() {
+    int configured = context.getConnection().getQueryServices().getProps().getInt(
+        PHOENIX_REGION_LOCATION_BULK_WARMUP_WAIT_MS,
+        DEFAULT_PHOENIX_REGION_LOCATION_BULK_WARMUP_WAIT_MS);
+    return configured >= 0
+        ? configured
+        : context.getStatement().getQueryTimeoutInMillis();
+  }
+
+  private static ConnectionQueryServicesImpl unwrapToImpl(ConnectionQueryServices svc) {
+    while (svc instanceof DelegateConnectionQueryServices) {
+      svc = ((DelegateConnectionQueryServices) svc).getDelegate();
+    }
+    return (svc instanceof ConnectionQueryServicesImpl)
+        ? (ConnectionQueryServicesImpl) svc : null;
   }
 
 }

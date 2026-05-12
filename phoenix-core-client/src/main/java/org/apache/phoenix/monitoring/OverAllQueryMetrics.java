@@ -30,6 +30,9 @@ import static org.apache.phoenix.monitoring.MetricType.QUERY_SCAN_TIMEOUT_COUNTE
 import static org.apache.phoenix.monitoring.MetricType.QUERY_TIMEOUT_COUNTER;
 import static org.apache.phoenix.monitoring.MetricType.RESULT_SET_TIME_MS;
 import static org.apache.phoenix.monitoring.MetricType.SQL_QUERY_PARSING_TIME_MS;
+import static org.apache.phoenix.monitoring.MetricType.REGION_LOCATION_BULK_WARMUP_ELAPSED_MS;
+import static org.apache.phoenix.monitoring.MetricType.REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER;
+import static org.apache.phoenix.monitoring.MetricType.REGION_LOCATION_BULK_WARMUP_INVOKED_COUNTER;
 import static org.apache.phoenix.monitoring.MetricType.WALL_CLOCK_TIME_MS;
 
 import java.util.HashMap;
@@ -58,6 +61,9 @@ public class OverAllQueryMetrics {
   private final CombinableMetric queryScanFailed;
   private final CombinableMetric cacheRefreshedDueToSplits;
   private final CombinableMetric queryParsingTimeMS;
+  private final CombinableMetric regionLocationBulkWarmupInvoked;
+  private final CombinableMetric regionLocationBulkWarmupFailed;
+  private final CombinableMetric regionLocationBulkWarmupElapsedMs;
 
   public OverAllQueryMetrics(boolean isRequestMetricsEnabled, LogLevel connectionLogLevel) {
     queryWatch = MetricUtil.getMetricsStopWatch(isRequestMetricsEnabled, connectionLogLevel,
@@ -92,6 +98,12 @@ public class OverAllQueryMetrics {
       connectionLogLevel, CACHE_REFRESH_SPLITS_COUNTER);
     queryParsingTimeMS = MetricUtil.getCombinableMetric(isRequestMetricsEnabled, connectionLogLevel,
       SQL_QUERY_PARSING_TIME_MS);
+    regionLocationBulkWarmupInvoked = MetricUtil.getCombinableMetric(isRequestMetricsEnabled,
+      connectionLogLevel, REGION_LOCATION_BULK_WARMUP_INVOKED_COUNTER);
+    regionLocationBulkWarmupFailed = MetricUtil.getCombinableMetric(isRequestMetricsEnabled,
+      connectionLogLevel, REGION_LOCATION_BULK_WARMUP_FAILED_COUNTER);
+    regionLocationBulkWarmupElapsedMs = MetricUtil.getCombinableMetric(isRequestMetricsEnabled,
+      connectionLogLevel, REGION_LOCATION_BULK_WARMUP_ELAPSED_MS);
   }
 
   public void updateNumParallelScans(long numParallelScans) {
@@ -124,6 +136,18 @@ public class OverAllQueryMetrics {
 
   public void cacheRefreshedDueToSplits() {
     cacheRefreshedDueToSplits.increment();
+  }
+
+  public void regionLocationBulkWarmupInvoked() {
+    regionLocationBulkWarmupInvoked.increment();
+  }
+
+  public void regionLocationBulkWarmupFailed() {
+    regionLocationBulkWarmupFailed.increment();
+  }
+
+  public void setRegionLocationBulkWarmupElapsedMs(long elapsed) {
+    regionLocationBulkWarmupElapsedMs.change(elapsed);
   }
 
   public void setQueryCompilerTimeMS(long time) {
@@ -198,6 +222,12 @@ public class OverAllQueryMetrics {
     metricsForPublish.put(cacheRefreshedDueToSplits.getMetricType(),
       cacheRefreshedDueToSplits.getValue());
     metricsForPublish.put(queryParsingTimeMS.getMetricType(), queryParsingTimeMS.getValue());
+    metricsForPublish.put(regionLocationBulkWarmupInvoked.getMetricType(),
+      regionLocationBulkWarmupInvoked.getValue());
+    metricsForPublish.put(regionLocationBulkWarmupFailed.getMetricType(),
+      regionLocationBulkWarmupFailed.getValue());
+    metricsForPublish.put(regionLocationBulkWarmupElapsedMs.getMetricType(),
+      regionLocationBulkWarmupElapsedMs.getValue());
     return metricsForPublish;
   }
 
@@ -216,6 +246,9 @@ public class OverAllQueryMetrics {
     queryScanFailed.reset();
     cacheRefreshedDueToSplits.reset();
     queryParsingTimeMS.reset();
+    regionLocationBulkWarmupInvoked.reset();
+    regionLocationBulkWarmupFailed.reset();
+    regionLocationBulkWarmupElapsedMs.reset();
     queryWatch.stop();
     resultSetWatch.stop();
   }
@@ -235,6 +268,9 @@ public class OverAllQueryMetrics {
     queryOptimizerTimeMS.combine(metric.queryOptimizerTimeMS);
     queryResultItrSetTimeMS.combine(metric.queryResultItrSetTimeMS);
     queryParsingTimeMS.combine(metric.queryParsingTimeMS);
+    regionLocationBulkWarmupInvoked.combine(metric.regionLocationBulkWarmupInvoked);
+    regionLocationBulkWarmupFailed.combine(metric.regionLocationBulkWarmupFailed);
+    regionLocationBulkWarmupElapsedMs.combine(metric.regionLocationBulkWarmupElapsedMs);
     return this;
   }
 

@@ -516,6 +516,10 @@ public class QueryServicesOptions {
   public static final int DEFAULT_SLOWEST_SCAN_METRICS_COUNT = 0;
   public static final boolean DEFAULT_SCAN_METRICS_BY_REGION_ENABLED = false;
 
+  public static final boolean DEFAULT_PHOENIX_REGION_LOCATION_BULK_WARMUP_ENABLED = false;
+  public static final int DEFAULT_PHOENIX_REGION_LOCATION_BULK_WARMUP_THREADS = 1;
+  public static final int DEFAULT_PHOENIX_REGION_LOCATION_BULK_WARMUP_WAIT_MS = -1;
+
   private final Configuration config;
 
   private QueryServicesOptions(Configuration config) {
