@@ -2763,6 +2763,8 @@ public class CompactionScanner implements InternalScanner {
     private void compactRegionLevel(List<Cell> input, List<Cell> result) throws IOException {
       byte[] rowKey = CellUtil.cloneRow(input.get(0));
       Scan scan = new Scan();
+      // This is a maintenance (compaction row re-scan) scan; do not pollute the block cache.
+      scan.setCacheBlocks(false);
       scan.setRaw(true);
       scan.readAllVersions();
       // compaction + 1 because the upper limit of the time range is not inclusive

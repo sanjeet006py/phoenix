@@ -525,6 +525,24 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     return plan.getContext().getScan();
   }
 
+  private Scan compileQuery(String query, List<Object> binds, Properties extraProps)
+    throws SQLException {
+    Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+    props.putAll(extraProps);
+    Connection conn = DriverManager.getConnection(getUrl(), props);
+    try {
+      PhoenixPreparedStatement statement =
+        conn.prepareStatement(query).unwrap(PhoenixPreparedStatement.class);
+      for (Object bind : binds) {
+        statement.setObject(1, bind);
+      }
+      QueryPlan plan = statement.compileQuery(query);
+      return plan.getContext().getScan();
+    } finally {
+      conn.close();
+    }
+  }
+
   private Scan projectQuery(String query) throws SQLException {
     QueryPlan plan = getQueryPlan(query, Collections.emptyList());
     plan.iterator(); // Forces projection
@@ -1512,6 +1530,44 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     scan = compileQuery(
       "select /*+ NO_CACHE */ p1.val from ptsdb p1 inner join ptsdb p2 on p1.inst = p2.inst",
       binds);
+    assertFalse(scan.getCacheBlocks());
+  }
+
+  @Test
+  public void testDisableBlockCacheForQueriesConfig() throws Exception {
+    List<Object> binds = Collections.emptyList();
+    Properties disabled = new Properties();
+    disabled.setProperty(QueryServices.DISABLE_BLOCK_CACHE_FOR_QUERIES_ATTRIB, "false");
+    Properties enabled = new Properties();
+    enabled.setProperty(QueryServices.DISABLE_BLOCK_CACHE_FOR_QUERIES_ATTRIB, "true");
+
+    // 1. Config disabled, plain query -> HBase default (cache blocks).
+    Scan scan = compileQuery("select val from ptsdb", binds, disabled);
+    assertTrue(scan.getCacheBlocks());
+
+    // 2. Config enabled, plain query -> do not cache blocks.
+    scan = compileQuery("select val from ptsdb", binds, enabled);
+    assertFalse(scan.getCacheBlocks());
+
+    // 3. Config enabled, USE_CACHE hint -> force cache blocks (plus a join variant to
+    // prove the hint propagates through clones, mirroring testNoCachingHint).
+    scan = compileQuery("select /*+ USE_CACHE */ val from ptsdb", binds, enabled);
+    assertTrue(scan.getCacheBlocks());
+    scan = compileQuery(
+      "select /*+ USE_CACHE */ p1.val from ptsdb p1 inner join ptsdb p2 on p1.inst = p2.inst",
+      binds, enabled);
+    assertTrue(scan.getCacheBlocks());
+
+    // 4. Config enabled, NO_CACHE hint -> do not cache blocks.
+    scan = compileQuery("select /*+ NO_CACHE */ val from ptsdb", binds, enabled);
+    assertFalse(scan.getCacheBlocks());
+
+    // 5. Config disabled, USE_CACHE hint -> cache blocks (observationally a no-op).
+    scan = compileQuery("select /*+ USE_CACHE */ val from ptsdb", binds, disabled);
+    assertTrue(scan.getCacheBlocks());
+
+    // 6. Config enabled, NO_CACHE and USE_CACHE together -> NO_CACHE wins.
+    scan = compileQuery("select /*+ NO_CACHE USE_CACHE */ val from ptsdb", binds, enabled);
     assertFalse(scan.getCacheBlocks());
   }
 

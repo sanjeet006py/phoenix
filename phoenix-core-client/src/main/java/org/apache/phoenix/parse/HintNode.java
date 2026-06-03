@@ -79,6 +79,12 @@ public class HintNode {
      */
     NO_CACHE,
     /**
+     * Forces this query's scans to use the HBase block cache (Scan.setCacheBlocks(true)),
+     * overriding phoenix.query.disableBlockCacheForQueries when that config is enabled. Has no
+     * effect if NO_CACHE is also specified (NO_CACHE wins).
+     */
+    USE_CACHE,
+    /**
      * Use sort-merge join algorithm instead of broadcast join (hash join) algorithm.
      */
     USE_SORT_MERGE_JOIN,

@@ -184,9 +184,20 @@ public class QueryCompiler {
     this.costBased = services.getProps().getBoolean(QueryServices.COST_BASED_OPTIMIZER_ENABLED,
       QueryServicesOptions.DEFAULT_COST_BASED_OPTIMIZER_ENABLED);
     scan.setLoadColumnFamiliesOnDemand(true);
+    boolean disableBlockCacheForQueries =
+      services.getProps().getBoolean(QueryServices.DISABLE_BLOCK_CACHE_FOR_QUERIES_ATTRIB,
+        QueryServicesOptions.DEFAULT_DISABLE_BLOCK_CACHE_FOR_QUERIES);
     if (select.getHint().hasHint(Hint.NO_CACHE)) {
+      // NO_CACHE always wins, regardless of config or USE_CACHE.
+      scan.setCacheBlocks(false);
+    } else if (select.getHint().hasHint(Hint.USE_CACHE)) {
+      // Force-cache hint: use the block cache even when the disable config is on.
+      scan.setCacheBlocks(true);
+    } else if (disableBlockCacheForQueries) {
+      // Config enabled, no overriding hint: default to not caching blocks.
       scan.setCacheBlocks(false);
     }
+    // else: leave HBase default (true) -- identical to today's behavior.
 
     scan.setCaching(statement.getFetchSize());
     this.originalScan = ScanUtil.newScan(scan);

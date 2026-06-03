@@ -154,6 +154,9 @@ public abstract class RegionScannerFactory {
 
             PTable.ImmutableStorageScheme storageScheme = indexMaintainer.getIndexStorageScheme();
             Scan dataTableScan = new Scan();
+            // Honor the original client scan's block-cache preference on this derived
+            // data-table scan (the client value serializes over RPC on the incoming scan).
+            dataTableScan.setCacheBlocks(scan.getCacheBlocks());
             if (dataColumns != null) {
               for (int i = 0; i < dataColumns.length; i++) {
                 if (storageScheme == PTable.ImmutableStorageScheme.SINGLE_CELL_ARRAY_WITH_OFFSETS) {

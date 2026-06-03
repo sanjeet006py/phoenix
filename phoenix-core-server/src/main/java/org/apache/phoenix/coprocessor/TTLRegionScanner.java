@@ -179,6 +179,8 @@ public class TTLRegionScanner extends BaseRegionScanner {
       LOG.debug("WndStart = {}, WndEnd = {}, trim = {}", wndStartTS, wndEndTS, trimTimestamp);
       row.clear(); // reset the row on every iteration
       Scan singleRowScan = new Scan();
+      // This is a maintenance (TTL expiry) scan; do not pollute the block cache.
+      singleRowScan.setCacheBlocks(false);
       singleRowScan.setTimeRange(wndStartTS, wndEndTS);
       byte[] rowKey = CellUtil.cloneRow(result.get(0));
       singleRowScan.withStartRow(rowKey, true);

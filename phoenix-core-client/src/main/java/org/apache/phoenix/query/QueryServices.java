@@ -113,6 +113,10 @@ public interface QueryServices extends SQLCloseable {
     "phoenix.query.rowKeyOrderSaltedTable";
 
   public static final String USE_INDEXES_ATTRIB = "phoenix.query.useIndexes";
+  // When true, Phoenix query scans default to not using the HBase block cache
+  // (Scan.setCacheBlocks(false)) unless overridden by the USE_CACHE hint.
+  public static final String DISABLE_BLOCK_CACHE_FOR_QUERIES_ATTRIB =
+    "phoenix.query.disableBlockCacheForQueries";
   @Deprecated // use the IMMUTABLE keyword while creating the table
   public static final String IMMUTABLE_ROWS_ATTRIB = "phoenix.mutate.immutableRows";
   public static final String INDEX_MUTATE_BATCH_SIZE_THRESHOLD_ATTRIB =

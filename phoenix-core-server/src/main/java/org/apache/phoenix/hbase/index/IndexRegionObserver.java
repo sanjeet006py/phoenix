@@ -1216,6 +1216,8 @@ public class IndexRegionObserver implements RegionCoprocessor, RegionObserver {
       for (KeyRange key : keys) {
         // Scan.java usage alters scan instances, safer to create scan instance per usage
         Scan scan = new Scan();
+        // Write-path row-state read (index maintenance); do not pollute the block cache.
+        scan.setCacheBlocks(false);
         // create a scan with same start/stop row key scan#isGetScan()
         // for bloom filters scan should be a get
         scan.withStartRow(key.getLowerRange(), true);
@@ -1224,6 +1226,8 @@ public class IndexRegionObserver implements RegionCoprocessor, RegionObserver {
       }
     } else {
       Scan scan = new Scan();
+      // Write-path row-state read (index maintenance); do not pollute the block cache.
+      scan.setCacheBlocks(false);
       ScanRanges scanRanges = ScanRanges.createPointLookup(new ArrayList<KeyRange>(keys));
       scanRanges.initializeScan(scan);
       SkipScanFilter skipScanFilter = scanRanges.getSkipScanFilter();

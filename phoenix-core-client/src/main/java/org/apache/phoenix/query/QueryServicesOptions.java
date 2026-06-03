@@ -177,6 +177,9 @@ public class QueryServicesOptions {
   public static final boolean DEFAULT_PRESERVE_MUTATIONS_ON_LIMIT_EXCEEDED = false;
   public static final int DEFAULT_HBASE_CLIENT_KEYVALUE_MAXSIZE = 10485760; // 10 Mb
   public static final boolean DEFAULT_USE_INDEXES = true; // Use indexes
+  // Default for phoenix.query.disableBlockCacheForQueries: off, so query scans use the
+  // HBase block cache exactly as today unless an operator opts in.
+  public static final boolean DEFAULT_DISABLE_BLOCK_CACHE_FOR_QUERIES = false;
   public static final boolean DEFAULT_IMMUTABLE_ROWS = false; // Tables rows may be updated
   public static final boolean DEFAULT_DROP_METADATA = true; // Drop meta data also.
   public static final long DEFAULT_DRIVER_SHUTDOWN_TIMEOUT_MS = 5 * 1000; // Time to wait in

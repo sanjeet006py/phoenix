@@ -34,6 +34,9 @@ import org.apache.hadoop.hbase.filter.FilterList;
 import org.apache.phoenix.filter.SkipScanFilter;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixPreparedStatement;
+import org.apache.phoenix.parse.HintNode.Hint;
+import org.apache.phoenix.parse.SQLParser;
+import org.apache.phoenix.parse.SelectStatement;
 import org.apache.phoenix.query.BaseConnectionlessQueryTest;
 import org.apache.phoenix.util.PropertiesUtil;
 import org.apache.phoenix.util.QueryUtil;
@@ -107,6 +110,14 @@ public class StatementHintsCompilationTest extends BaseConnectionlessQueryTest {
         + "    SERVER TOP 100 ROWS SORTED BY [ORGANIZATION_ID, PARENT_ID, CREATED_DATE DESC, ENTITY_HISTORY_ID]\n"
         + "CLIENT MERGE SORT\nCLIENT LIMIT 100",
       QueryUtil.getExplainPlan(rs));
+  }
+
+  @Test
+  public void testUseCacheHintParsing() throws Exception {
+    SelectStatement select = new SQLParser("SELECT /*+ USE_CACHE */ * FROM atable").parseQuery();
+    assertTrue("Expected USE_CACHE hint to resolve to Hint.USE_CACHE",
+      select.getHint().hasHint(Hint.USE_CACHE));
+    assertFalse("Did not expect NO_CACHE hint", select.getHint().hasHint(Hint.NO_CACHE));
   }
 
   @Test

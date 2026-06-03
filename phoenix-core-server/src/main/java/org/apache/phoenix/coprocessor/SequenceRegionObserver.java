@@ -136,6 +136,10 @@ public class SequenceRegionObserver implements RegionObserver, RegionCoprocessor
           validateOnly &= (Sequence.ValueOp.VALIDATE_SEQUENCE.ordinal() == value);
         }
       }
+      // Reviewed for phoenix.query.disableBlockCacheForQueries: this SYSTEM.SEQUENCE
+      // read-modify-write single-row get is unreachable by SQL hints (NO_CACHE/USE_CACHE)
+      // and the config, so it is intentionally left at the HBase default block-cache
+      // behavior this cycle. Revisit in a future review cycle.
       try (RegionScanner scanner = region.getScanner(new Scan(get))) {
         List<Cell> currentCells = new ArrayList<>();
         scanner.next(currentCells);
@@ -399,6 +403,10 @@ public class SequenceRegionObserver implements RegionObserver, RegionCoprocessor
       Get get = new Get(row);
       get.setTimeRange(minGetTimestamp, maxGetTimestamp);
       get.addColumn(family, qualifier);
+      // Reviewed for phoenix.query.disableBlockCacheForQueries: this SYSTEM.SEQUENCE
+      // read-modify-write single-row get is unreachable by SQL hints (NO_CACHE/USE_CACHE)
+      // and the config, so it is intentionally left at the HBase default block-cache
+      // behavior this cycle. Revisit in a future review cycle.
       try (RegionScanner scanner = region.getScanner(new Scan(get))) {
         List<Cell> cells = new ArrayList<>();
         scanner.next(cells);

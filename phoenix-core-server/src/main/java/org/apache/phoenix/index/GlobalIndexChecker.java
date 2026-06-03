@@ -339,6 +339,8 @@ public class GlobalIndexChecker extends BaseScannerRegionObserver implements Reg
     private void repairIndexRows(byte[] indexRowKey, long ts, List<Cell> row) throws IOException {
       if (buildIndexScanForDataTable == null) {
         buildIndexScanForDataTable = new Scan();
+        // This is a maintenance (read-repair rebuild) scan; do not pollute the block cache.
+        buildIndexScanForDataTable.setCacheBlocks(false);
         indexScan = new Scan(scan);
         singleRowIndexScan = new Scan(scan);
         // Scanners to be opened on index table using indexScan and singleRowIndexScan do
