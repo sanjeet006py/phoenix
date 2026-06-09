@@ -59,6 +59,7 @@ import org.apache.phoenix.execute.AggregatePlan;
 import org.apache.phoenix.execute.ClientAggregatePlan;
 import org.apache.phoenix.execute.ClientScanPlan;
 import org.apache.phoenix.execute.CursorFetchPlan;
+import org.apache.phoenix.execute.DelegateQueryPlan;
 import org.apache.phoenix.execute.HashJoinPlan;
 import org.apache.phoenix.execute.HashJoinPlan.HashSubPlan;
 import org.apache.phoenix.execute.HashJoinPlan.SubPlan;
@@ -570,7 +571,13 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
   }
 
   private QueryPlan getQueryPlan(String query, List<Object> binds) throws SQLException {
+    return getQueryPlan(query, binds, new Properties());
+  }
+
+  private QueryPlan getQueryPlan(String query, List<Object> binds, Properties extraProps)
+    throws SQLException {
     Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+    props.putAll(extraProps);
     Connection conn = DriverManager.getConnection(getUrl(), props);
     try {
       PhoenixPreparedStatement statement =
@@ -583,6 +590,145 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     } finally {
       conn.close();
     }
+  }
+
+  /**
+   * Collects every distinct {@link Scan} a plan will issue: this plan's own scan plus, for hash
+   * joins, the inner build-side scan of each sub-plan, and for delegating plans (e.g. tuple
+   * projection over a derived table) the delegate's scan -- recursing through nested joins and
+   * subqueries. Used to assert that a block-cache hint or config is honored by all scans of a join
+   * query, not just the outer one. Scans are de-duplicated by identity because a
+   * {@link DelegateQueryPlan} forwards {@code getContext()} to its delegate.
+   */
+  private static List<Scan> collectScans(QueryPlan plan) {
+    List<Scan> scans = new ArrayList<>();
+    collectScans(plan, scans);
+    return scans;
+  }
+
+  private static void collectScans(QueryPlan plan, List<Scan> scans) {
+    if (plan == null) {
+      return;
+    }
+    Scan scan = plan.getContext().getScan();
+    boolean seen = false;
+    for (Scan s : scans) {
+      if (s == scan) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) {
+      scans.add(scan);
+    }
+    if (plan instanceof HashJoinPlan) {
+      for (SubPlan subPlan : ((HashJoinPlan) plan).getSubPlans()) {
+        collectScans(subPlan.getInnerPlan(), scans);
+      }
+    }
+    if (plan instanceof DelegateQueryPlan) {
+      collectScans(((DelegateQueryPlan) plan).getDelegate(), scans);
+    }
+  }
+
+  private void assertCacheBlocksForAllScans(String query, List<Object> binds, Properties extraProps,
+    boolean expected) throws SQLException {
+    List<Scan> scans = collectScans(getQueryPlan(query, binds, extraProps));
+    assertTrue("Expected at least one inner scan for a join query", scans.size() > 1);
+    for (Scan scan : scans) {
+      assertEquals(expected, scan.getCacheBlocks());
+    }
+  }
+
+  /**
+   * A self-join expressed as an aggregate derived table joined to a plain derived table of the same
+   * physical table. Unlike the simple aliased self-join (ptsdb p1 join ptsdb p2), each side here is
+   * compiled by its own QueryCompiler via compileSubquery, so the inner build-side scan does not
+   * share the outer scan's instance. This verifies the disable-block-cache config reaches every
+   * scan of such a query (outer probe-side and inner build-side), not just the outer one.
+   */
+  @Test
+  public void testDisableBlockCacheForSelfJoinQuery() throws Exception {
+    List<Object> binds = Collections.emptyList();
+    String selfJoin = "select a.inst as inst, b.host as host, b.val as val, "
+      + "a.total_count as total_count from "
+      + "(select inst, count(*) as total_count from ptsdb where inst in ('a','b') group by inst) a "
+      + "join (select inst, host, val from ptsdb where inst in ('a','b')) b on a.inst = b.inst";
+
+    // Sanity check: this query really compiles to a hash join with a separate inner scan.
+    assertTrue(getQueryPlan(selfJoin, binds) instanceof HashJoinPlan);
+
+    Properties disabled = new Properties();
+    disabled.setProperty(QueryServices.DISABLE_BLOCK_CACHE_FOR_QUERIES_ATTRIB, "false");
+    Properties enabled = new Properties();
+    enabled.setProperty(QueryServices.DISABLE_BLOCK_CACHE_FOR_QUERIES_ATTRIB, "true");
+
+    // Config disabled -> every scan keeps the HBase default (cache blocks).
+    assertCacheBlocksForAllScans(selfJoin, binds, disabled, true);
+
+    // Config enabled -> every scan, including the inner build-side scan, must not cache blocks.
+    assertCacheBlocksForAllScans(selfJoin, binds, enabled, false);
+  }
+
+  /**
+   * Places the block-cache hint on every part of the self-join -- the outer SELECT and both inner
+   * subqueries -- and verifies it is honored by both the probe-side (outer) scan and the build-side
+   * (inner sub-plan) scan, overriding the disable-block-cache config in both directions.
+   * <p>
+   * The hint must be repeated on the outer SELECT, not just the inner subqueries, because a
+   * HASH_BUILD_LEFT join reuses the outer query's StatementContext scan as the probe-side scan: the
+   * probe-side derived table is compiled against the outer context (only its family map is copied
+   * from the throwaway subquery plan), so a hint on the probe-side inner subquery never reaches a
+   * live scan and is silently dropped. The only hint that reaches the probe-side scan is the one on
+   * the outer SELECT. The build-side derived table, by contrast, is compiled by its own
+   * QueryCompiler via compileSubquery and so honors its own inner-subquery hint. Because the
+   * optimizer -- not the SQL author -- decides which side becomes build vs probe, putting the hint
+   * on all three places is the robust way to force a consistent cacheBlocks setting across every
+   * scan regardless of the chosen join strategy.
+   */
+  @Test
+  public void testBlockCacheHintOnInnerAndOuterOfSelfJoin() throws Exception {
+    List<Object> binds = Collections.emptyList();
+    Properties disabled = new Properties();
+    disabled.setProperty(QueryServices.DISABLE_BLOCK_CACHE_FOR_QUERIES_ATTRIB, "false");
+    Properties enabled = new Properties();
+    enabled.setProperty(QueryServices.DISABLE_BLOCK_CACHE_FOR_QUERIES_ATTRIB, "true");
+
+    // Config enabled (disable caching) + USE_CACHE on the outer SELECT and both inner subqueries
+    // -> both the probe-side and build-side scans force-cache, overriding the config.
+    String useCacheEverywhere = "select /*+ USE_CACHE */ a.inst as inst, b.host as host, "
+      + "b.val as val, a.total_count as total_count from "
+      + "(select /*+ USE_CACHE */ inst, count(*) as total_count from ptsdb where inst in ('a','b') "
+      + "group by inst) a "
+      + "join (select /*+ USE_CACHE */ inst, host, val from ptsdb where inst in ('a','b')) b "
+      + "on a.inst = b.inst";
+    assertProbeAndBuildCacheBlocks(useCacheEverywhere, binds, enabled, true, true);
+
+    // Config disabled (cache by default) + NO_CACHE on the outer SELECT and both inner subqueries
+    // -> both the probe-side and build-side scans skip the cache, overriding the default.
+    String noCacheEverywhere = "select /*+ NO_CACHE */ a.inst as inst, b.host as host, "
+      + "b.val as val, a.total_count as total_count from "
+      + "(select /*+ NO_CACHE */ inst, count(*) as total_count from ptsdb where inst in ('a','b') "
+      + "group by inst) a "
+      + "join (select /*+ NO_CACHE */ inst, host, val from ptsdb where inst in ('a','b')) b "
+      + "on a.inst = b.inst";
+    assertProbeAndBuildCacheBlocks(noCacheEverywhere, binds, disabled, false, false);
+  }
+
+  /**
+   * Asserts the cacheBlocks setting of a single-join HashJoinPlan's probe-side (outer) scan and its
+   * one build-side inner sub-plan scan.
+   */
+  private void assertProbeAndBuildCacheBlocks(String query, List<Object> binds,
+    Properties extraProps, boolean expectedProbe, boolean expectedBuild) throws SQLException {
+    QueryPlan plan = getQueryPlan(query, binds, extraProps);
+    assertTrue("Expected a hash join plan", plan instanceof HashJoinPlan);
+    SubPlan[] subPlans = ((HashJoinPlan) plan).getSubPlans();
+    assertEquals("Expected exactly one build-side sub-plan", 1, subPlans.length);
+    assertEquals("probe-side (outer) scan cacheBlocks", expectedProbe,
+      plan.getContext().getScan().getCacheBlocks());
+    assertEquals("build-side (inner subquery) scan cacheBlocks", expectedBuild,
+      subPlans[0].getInnerPlan().getContext().getScan().getCacheBlocks());
   }
 
   @Test
@@ -1527,10 +1673,11 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     assertTrue(scan.getCacheBlocks());
     scan = compileQuery("select /*+ NO_CACHE */ val from ptsdb", binds);
     assertFalse(scan.getCacheBlocks());
-    scan = compileQuery(
-      "select /*+ NO_CACHE */ p1.val from ptsdb p1 inner join ptsdb p2 on p1.inst = p2.inst",
-      binds);
-    assertFalse(scan.getCacheBlocks());
+    // For a join, assert NO_CACHE propagates to every scan (outer probe-side plus inner
+    // build-side), not just the outer scan returned by compileQuery.
+    assertCacheBlocksForAllScans(
+      "select /*+ NO_CACHE */ p1.val from ptsdb p1 inner join ptsdb p2 on p1.inst = p2.inst", binds,
+      new Properties(), false);
   }
 
   @Test
@@ -1553,10 +1700,9 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     // prove the hint propagates through clones, mirroring testNoCachingHint).
     scan = compileQuery("select /*+ USE_CACHE */ val from ptsdb", binds, enabled);
     assertTrue(scan.getCacheBlocks());
-    scan = compileQuery(
+    assertCacheBlocksForAllScans(
       "select /*+ USE_CACHE */ p1.val from ptsdb p1 inner join ptsdb p2 on p1.inst = p2.inst",
-      binds, enabled);
-    assertTrue(scan.getCacheBlocks());
+      binds, enabled, true);
 
     // 4. Config enabled, NO_CACHE hint -> do not cache blocks.
     scan = compileQuery("select /*+ NO_CACHE */ val from ptsdb", binds, enabled);

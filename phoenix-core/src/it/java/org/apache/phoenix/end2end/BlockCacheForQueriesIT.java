@@ -41,7 +41,6 @@ import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.phoenix.hbase.index.IndexRegionObserver;
 import org.apache.phoenix.query.BaseTest;
 import org.apache.phoenix.query.QueryServices;
-import org.apache.phoenix.thirdparty.com.google.common.collect.Maps;
 import org.apache.phoenix.util.PropertiesUtil;
 import org.apache.phoenix.util.ReadOnlyProps;
 import org.apache.phoenix.util.TestUtil;
@@ -51,12 +50,14 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
+import org.apache.phoenix.thirdparty.com.google.common.collect.Maps;
+
 /**
  * End-to-end coverage for {@code phoenix.query.disableBlockCacheForQueries} and the {@code
- * USE_CACHE} hint. These tests observe the {@code cacheBlocks} value on the {@link Scan} objects the
- * RegionServer actually opens, via test region observers, so they prove the server honored the
+ * USE_CACHE} hint. These tests observe the {@code cacheBlocks} value on the {@link Scan} objects
+ * the RegionServer actually opens, via test region observers, so they prove the server honored the
  * client's preference -- including the derived data-table scan in {@code RegionScannerFactory} that
- * the client never sees, and the §4b maintenance-hardening on {@code IndexRegionObserver}.
+ * the client never sees, and the §4b write-path row-state scan in {@code IndexRegionObserver}.
  */
 @Category(NeedsOwnMiniClusterTest.class)
 public class BlockCacheForQueriesIT extends BaseTest {
@@ -101,17 +102,18 @@ public class BlockCacheForQueriesIT extends BaseTest {
 
     @Override
     public void preScannerOpen(ObserverContext<RegionCoprocessorEnvironment> c, Scan scan) {
-      String tableName = c.getEnvironment().getRegion().getRegionInfo().getTable().getNameAsString();
+      String tableName =
+        c.getEnvironment().getRegion().getRegionInfo().getTable().getNameAsString();
       CACHE_BLOCKS.put(tableName, scan.getCacheBlocks());
     }
   }
 
   /**
-   * Records the {@code cacheBlocks} value for every store scanner opened on a region, keyed by table
-   * name. {@code preStoreScannerOpen} fires for same-region, server-internal scans (such as
-   * {@code IndexRegionObserver.getCurrentRowStates}) that {@code preScannerOpen} never sees. Captures
-   * are appended (one per column family per scanner open), so callers reset immediately before the
-   * triggering write and scope their assertions to that window.
+   * Records the {@code cacheBlocks} value for every store scanner opened on a region, keyed by
+   * table name. {@code preStoreScannerOpen} fires for same-region, server-internal scans (such as
+   * {@code IndexRegionObserver.getCurrentRowStates}) that {@code preScannerOpen} never sees.
+   * Captures are appended (one per column family per scanner open), so callers reset immediately
+   * before the triggering write and scope their assertions to that window.
    */
   public static class StoreScanCacheBlocksObserver extends SimpleRegionObserver {
     public static final Map<String, List<Boolean>> CACHE_BLOCKS = new ConcurrentHashMap<>();
@@ -127,7 +129,8 @@ public class BlockCacheForQueriesIT extends BaseTest {
     @Override
     public void preStoreScannerOpen(ObserverContext<RegionCoprocessorEnvironment> c, Store store,
       ScanOptions options) {
-      String tableName = c.getEnvironment().getRegion().getRegionInfo().getTable().getNameAsString();
+      String tableName =
+        c.getEnvironment().getRegion().getRegionInfo().getTable().getNameAsString();
       CACHE_BLOCKS.computeIfAbsent(tableName, k -> new CopyOnWriteArrayList<>())
         .add(options.getScan().getCacheBlocks());
     }
@@ -165,7 +168,7 @@ public class BlockCacheForQueriesIT extends BaseTest {
     } catch (Exception e) {
       // expected
     } finally {
-      IndexRegionObserver.setFailDataTableUpdatesForTesting(false);
+      IndexRegionObserver.setFailPostIndexUpdatesForTesting(false);
     }
   }
 
@@ -174,8 +177,8 @@ public class BlockCacheForQueriesIT extends BaseTest {
   public void testPlainSelect() throws Exception {
     String tableName = generateUniqueName();
     try (Connection conn = getConnection(false, false, null)) {
-      conn.createStatement().execute(
-        "CREATE TABLE " + tableName + " (id VARCHAR NOT NULL PRIMARY KEY, val VARCHAR)");
+      conn.createStatement()
+        .execute("CREATE TABLE " + tableName + " (id VARCHAR NOT NULL PRIMARY KEY, val VARCHAR)");
       conn.createStatement().execute("UPSERT INTO " + tableName + " VALUES ('a', 'av')");
       conn.commit();
     }
@@ -218,12 +221,10 @@ public class BlockCacheForQueriesIT extends BaseTest {
     try (Connection conn = getConnection(false, false, null)) {
       conn.createStatement().execute("CREATE TABLE " + dataTableName
         + " (id VARCHAR NOT NULL PRIMARY KEY, val1 VARCHAR, val2 VARCHAR)");
-      conn.createStatement().execute(
-        "CREATE UNCOVERED INDEX " + indexTableName + " ON " + dataTableName + " (val1)");
-      conn.createStatement().execute(
-        "UPSERT INTO " + dataTableName + " VALUES ('a', 'ab', 'abc')");
-      conn.createStatement().execute(
-        "UPSERT INTO " + dataTableName + " VALUES ('b', 'bc', 'bcd')");
+      conn.createStatement()
+        .execute("CREATE UNCOVERED INDEX " + indexTableName + " ON " + dataTableName + " (val1)");
+      conn.createStatement().execute("UPSERT INTO " + dataTableName + " VALUES ('a', 'ab', 'abc')");
+      conn.createStatement().execute("UPSERT INTO " + dataTableName + " VALUES ('b', 'bc', 'bcd')");
       conn.commit();
     }
     // Attach to the data table so we capture the derived dataTableScan opened cross-region.
@@ -278,8 +279,8 @@ public class BlockCacheForQueriesIT extends BaseTest {
     extra.setProperty(QueryServices.ENABLE_SERVER_SIDE_UPSERT_MUTATIONS,
       Boolean.toString(serverSide));
     try (Connection conn = getConnection(false, false, null)) {
-      conn.createStatement().execute(
-        "CREATE TABLE " + tableName + " (id VARCHAR NOT NULL PRIMARY KEY, val VARCHAR)");
+      conn.createStatement()
+        .execute("CREATE TABLE " + tableName + " (id VARCHAR NOT NULL PRIMARY KEY, val VARCHAR)");
       conn.createStatement().execute("UPSERT INTO " + tableName + " VALUES ('a', 'av')");
       conn.commit();
     }
@@ -288,8 +289,8 @@ public class BlockCacheForQueriesIT extends BaseTest {
     // Config enabled: the read side of UPSERT SELECT must not cache blocks.
     ScanCacheBlocksObserver.reset();
     try (Connection conn = getConnection(true, serverSide, extra)) {
-      conn.createStatement().execute("UPSERT INTO " + tableName + " SELECT 'b', val FROM "
-        + tableName + " WHERE id = 'a'");
+      conn.createStatement().execute(
+        "UPSERT INTO " + tableName + " SELECT 'b', val FROM " + tableName + " WHERE id = 'a'");
       if (!serverSide) {
         conn.commit();
       }
@@ -328,8 +329,8 @@ public class BlockCacheForQueriesIT extends BaseTest {
     extra.setProperty(QueryServices.ENABLE_SERVER_SIDE_DELETE_MUTATIONS,
       Boolean.toString(serverSide));
     try (Connection conn = getConnection(false, false, null)) {
-      conn.createStatement().execute("CREATE TABLE " + tableName
-        + " (id VARCHAR NOT NULL PRIMARY KEY, j INTEGER)");
+      conn.createStatement()
+        .execute("CREATE TABLE " + tableName + " (id VARCHAR NOT NULL PRIMARY KEY, j INTEGER)");
       conn.createStatement().execute("UPSERT INTO " + tableName + " VALUES ('a', 10)");
       conn.createStatement().execute("UPSERT INTO " + tableName + " VALUES ('b', 20)");
       conn.commit();
@@ -358,8 +359,9 @@ public class BlockCacheForQueriesIT extends BaseTest {
     assertCacheBlocks(tableName, true);
   }
 
-  // Scenario 7: read-repair (GlobalIndexChecker). The read-repair re-scan runs over the original
-  // client scan / new Scan(scan) copies, so it must honor the client cacheBlocks value.
+  // Scenario 7: read-repair (GlobalIndexChecker). The read-repair index re-scans are new Scan(scan)
+  // copies of the original client scan, so they must honor the client cacheBlocks value -- the
+  // data-table rebuild scan is hardened to cacheBlocks=false, but that must not leak onto these.
   @Test
   public void testReadRepairHonorsClientCacheBlocks() throws Exception {
     String dataTableName = generateUniqueName();
@@ -370,23 +372,42 @@ public class BlockCacheForQueriesIT extends BaseTest {
       conn.createStatement().execute(
         "CREATE INDEX " + indexTableName + " ON " + dataTableName + " (val1) INCLUDE (val2)");
     }
-    // Observe the index table -- the read-repair scanner runs over the (index) client scan.
+    // Observe the index table -- the read-repair scanner runs over the (index) client scan, and the
+    // read-repair index re-scans are new Scan(scan) copies that inherit its cacheBlocks value.
     addObserver(indexTableName, ScanCacheBlocksObserver.class);
+    addObserver(dataTableName, ScanCacheBlocksObserver.class);
 
-    // Leave an UNVERIFIED index row behind.
+    // Config enabled, no hint: the read-repair index scan honors the client's cacheBlocks=false.
+    assertReadRepairCacheBlocks(dataTableName, indexTableName, "a", false, false);
+    // Config enabled, USE_CACHE: the read-repair index scan honors the client's cacheBlocks=true,
+    // proving the maintenance hardening (forced false on the data-table rebuild scan) does not
+    // bleed
+    // onto the index re-scans, which must follow the client preference.
+    assertReadRepairCacheBlocks(dataTableName, indexTableName, "b", true, true);
+  }
+
+  private void assertReadRepairCacheBlocks(String dataTableName, String indexTableName,
+    String rowSuffix, boolean useCache, boolean expectedCacheBlocks) throws Exception {
+    String id = "id_" + rowSuffix;
+    String val1 = "v1_" + rowSuffix;
+    String val2 = "v2_" + rowSuffix;
+    // Leave an UNVERIFIED index row behind (first-phase index write succeeds, data-table write
+    // fails), so the next read of this row triggers read-repair.
     try (Connection conn = getConnection(false, false, null)) {
-      IndexRegionObserver.setFailDataTableUpdatesForTesting(true);
-      conn.createStatement().execute(
-        "UPSERT INTO " + dataTableName + " (id, val1, val2) VALUES ('a', 'ab', 'abc')");
-      commitWithException(conn);
+      IndexRegionObserver.setFailPostIndexUpdatesForTesting(true);
+      conn.createStatement().execute("UPSERT INTO " + dataTableName + " (id, val1, val2) VALUES ('"
+        + id + "', '" + val1 + "', '" + val2 + "')");
+      conn.commit();
+      IndexRegionObserver.setFailPostIndexUpdatesForTesting(false);
     }
 
     // Config enabled: the SELECT routes through the index (forced via INDEX hint), triggering
-    // read-repair; the index scan must reflect the client's cacheBlocks=false.
+    // read-repair; the index scan must reflect the client's cacheBlocks preference.
     ScanCacheBlocksObserver.reset();
     try (Connection conn = getConnection(true, false, null)) {
-      String selectSql = "SELECT /*+ INDEX(" + dataTableName + " " + indexTableName + ") */ val2 "
-        + "FROM " + dataTableName + " WHERE val1 = 'ab'";
+      String useCacheHint = useCache ? "USE_CACHE " : "";
+      String selectSql = "SELECT /*+ INDEX(" + dataTableName + " " + indexTableName + ") "
+        + useCacheHint + "*/ val2 FROM " + dataTableName + " WHERE val1 = '" + val1 + "'";
       try (ResultSet rs = conn.createStatement().executeQuery(selectSql)) {
         // Drain: the unverified row is repaired during the scan.
         while (rs.next()) {
@@ -394,40 +415,43 @@ public class BlockCacheForQueriesIT extends BaseTest {
         }
       }
     }
-    assertCacheBlocks(indexTableName, false);
+    assertCacheBlocks(indexTableName, expectedCacheBlocks);
+    assertCacheBlocks(dataTableName, false);
   }
 
-  // Scenario 8 (bloom branch): IndexRegionObserver.getCurrentRowStates uses the per-key bloom-filter
-  // gets when BLOOMFILTER='ROW'. The §4b hardening forces those scans to not cache blocks.
+  // Scenario 8 (bloom branch): IndexRegionObserver.getCurrentRowStates uses the per-key
+  // bloom-filter
+  // gets when BLOOMFILTER='ROW'. This is a write-path row-state read (run in preBatchMutate while
+  // holding row locks).
   @Test
-  public void testMaintenanceScanNotCachedBloomFilter() throws Exception {
-    assertMaintenanceScanNotCached("ROW");
+  public void testCurrentRowStateNotCachedWithBloomFilter() throws Exception {
+    assertCurrentRowStateNotCachedOnWrite("ROW");
   }
 
   // Scenario 8 (skipscan branch): with BLOOMFILTER='NONE', getCurrentRowStates uses the SkipScan
-  // batch. The §4b hardening forces that scan to not cache blocks.
+  // batch. This is a write-path row-state read.
   @Test
-  public void testMaintenanceScanNotCachedSkipScan() throws Exception {
-    assertMaintenanceScanNotCached("NONE");
+  public void testCurrentRowStateNotCachedWithoutBloomFilter() throws Exception {
+    assertCurrentRowStateNotCachedOnWrite("NONE");
   }
 
-  private void assertMaintenanceScanNotCached(String bloomFilter) throws Exception {
+  private void assertCurrentRowStateNotCachedOnWrite(String bloomFilter) throws Exception {
     String dataTableName = generateUniqueName();
     String indexTableName = generateUniqueName();
     try (Connection conn = getConnection(false, false, null)) {
-      conn.createStatement().execute("CREATE TABLE " + dataTableName
-        + " (id VARCHAR NOT NULL PRIMARY KEY, val1 VARCHAR, val2 VARCHAR) BLOOMFILTER='"
-        + bloomFilter + "'");
+      conn.createStatement()
+        .execute("CREATE TABLE " + dataTableName
+          + " (id VARCHAR NOT NULL PRIMARY KEY, val1 VARCHAR, val2 VARCHAR) BLOOMFILTER='"
+          + bloomFilter + "'");
       conn.createStatement().execute(
         "CREATE INDEX " + indexTableName + " ON " + dataTableName + " (val1) INCLUDE (val2)");
-      conn.createStatement().execute(
-        "UPSERT INTO " + dataTableName + " VALUES ('a', 'ab', 'abc')");
+      conn.createStatement().execute("UPSERT INTO " + dataTableName + " VALUES ('a', 'ab', 'abc')");
       conn.commit();
     }
     // Observe internal store scanners on the data table.
     addObserver(dataTableName, StoreScanCacheBlocksObserver.class);
 
-    // The atomic upsert drives getCurrentRowStates, which opens the maintenance row-state scan.
+    // The atomic upsert drives getCurrentRowStates, which opens the write-path row-state scan.
     StoreScanCacheBlocksObserver.reset();
     try (Connection conn = getConnection(false, true, null)) {
       conn.createStatement().execute("UPSERT INTO " + dataTableName + " VALUES ('a') "
@@ -436,10 +460,11 @@ public class BlockCacheForQueriesIT extends BaseTest {
 
     List<Boolean> captured = StoreScanCacheBlocksObserver.getCacheBlocks(dataTableName);
     assertNotNull("No store scan was captured on the data table " + dataTableName, captured);
-    assertFalse("Expected at least one captured maintenance store scan", captured.isEmpty());
+    assertFalse("Expected at least one captured write-path store scan", captured.isEmpty());
     for (Boolean cacheBlocks : captured) {
-      assertFalse("Maintenance row-state scan should not cache blocks (bloomFilter=" + bloomFilter
-        + ")", cacheBlocks);
+      assertFalse(
+        "Write-path row-state scan should not cache blocks (bloomFilter=" + bloomFilter + ")",
+        cacheBlocks);
     }
   }
 }
